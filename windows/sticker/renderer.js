@@ -219,6 +219,11 @@ function bindEvents() {
     $('#btn-pin').title = pinned ? '항상 위에 고정 (켜짐)' : '항상 위에 고정 (꺼짐)';
   });
 
+  window.orbit.onPinState((pinned) => {
+    $('#btn-pin').classList.toggle('pin-active', pinned);
+    $('#btn-pin').title = pinned ? '항상 위에 고정 (켜짐)' : '항상 위에 고정 (꺼짐)';
+  });
+
   // Right-click context menu
   const ctxMenu = document.createElement('div');
   ctxMenu.id = 'ctx-menu';
@@ -529,4 +534,62 @@ function formatMin(m) {
   return `${m}m`;
 }
 
+// ── Work Timer ──
+
+let workSession = null;
+let workTodayBase = 0;
+
+async function initWorkTimer() {
+  const active = await window.orbit.workGetActive();
+  if (active) {
+    workSession = active;
+    updateWorkBtn(true);
+  }
+  const today = new Date();
+  const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  workTodayBase = await window.orbit.workTotalByDate(dateStr);
+  updateWorkDisplay();
+
+  $('#btn-work-toggle').addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (workSession) {
+      await window.orbit.workStop(workSession.id);
+      const today = new Date();
+      const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      workTodayBase = await window.orbit.workTotalByDate(dateStr);
+      workSession = null;
+      updateWorkBtn(false);
+    } else {
+      workSession = await window.orbit.workStart();
+      updateWorkBtn(true);
+    }
+    updateWorkDisplay();
+  });
+}
+
+function updateWorkBtn(running) {
+  const btn = $('#btn-work-toggle');
+  if (!btn) return;
+  btn.textContent = running ? '⏸' : '▶';
+  btn.title = running ? '작업 일시정지' : '작업 시작';
+  const timer = $('#work-timer');
+  if (timer) timer.classList.toggle('working', running);
+}
+
+function updateWorkDisplay() {
+  const el = $('#work-timer-display');
+  if (!el) return;
+  let total = workTodayBase;
+  if (workSession) {
+    total += Math.round((Date.now() - new Date(workSession.started_at).getTime()) / 1000);
+  }
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  el.textContent = h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+}
+
+setInterval(updateWorkDisplay, 1000);
+
 init();
+initWorkTimer();

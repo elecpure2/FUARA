@@ -145,6 +145,57 @@
 }
 ```
 
+## Project Custom Sections (프로젝트 커스텀 섹션)
+
+프로젝트별 사용자 정의 섹션을 관리한다. 대사 라이브러리, 참고 문서, 체크리스트 등을 프로젝트에 연결할 수 있다.
+
+### 자연어 매핑
+- "VDG 대사 전체 보여줘", "대사 라이브러리 불러와줘" → `GET /projects/:id/items/export`
+- "대사 추가해줘", "라이브러리에 넣어줘" → `POST /sections/:id/items`
+- "대사 수정해줘" → `PATCH /items/:id`
+- "섹션 추가해줘" → `POST /projects/:id/sections`
+
+### 핵심 API
+
+| 메서드 | 경로 | 역할 |
+|--------|------|------|
+| GET | `/projects/:id/sections` | 프로젝트 섹션 목록 |
+| POST | `/projects/:id/sections` | 섹션 생성 |
+| PATCH | `/sections/:id` | 섹션 수정 |
+| DELETE | `/sections/:id` | 섹션 삭제 |
+| GET | `/sections/:id/items` | 섹션 아이템 목록 |
+| POST | `/sections/:id/items` | 아이템 추가 |
+| PATCH | `/items/:id` | 아이템 수정 |
+| DELETE | `/items/:id` | 아이템 삭제 |
+| GET | `/projects/:id/items/export` | **전체 내보내기** (마크다운 기본, `?format=json`으로 JSON) |
+
+### POST /projects/:id/sections 페이로드
+```json
+{
+  "section_type": "dialogue_library",
+  "title": "대사 라이브러리"
+}
+```
+- `section_type`: `dialogue_library` / `reference_doc` / `checklist`
+
+### POST /sections/:id/items 페이로드
+```json
+{
+  "title": "비밀인데 말이야~",
+  "content": "비밀인데 말이야\n지금 한 말은 대본에 없는 거야.",
+  "tags": "[\"Lv1\", \"BodyTouch\", \"완성\"]",
+  "metadata": "{\"trigger\": \"BodyTouch\", \"level\": 1, \"hasVoice\": true}"
+}
+```
+- `tags`: JSON 배열 문자열 (필터링용)
+- `metadata`: JSON 객체 문자열 (섹션 타입별 추가 데이터)
+
+### LLM 대사 작업 워크플로우
+1. `GET /projects/1/items/export` → 캐릭터 프로필 + 기존 대사 전체를 마크다운으로 수신
+2. 이 컨텍스트를 기반으로 새 대사 제안
+3. 승인되면 `POST /sections/2/items`로 바로 등록
+4. `?format=json`으로 호출하면 프로그래밍적으로 파싱 가능한 JSON 반환
+
 ## PATCH /tasks/:id 가능 필드
 - `title`, `description`, `estimate_minutes`, `actual_minutes`
 - `priority` (`must|normal|low`)

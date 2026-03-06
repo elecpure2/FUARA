@@ -66,6 +66,57 @@ html, body {
   color: var(--accent);
 }
 
+/* ── Work Timer ── */
+
+.work-timer {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  -webkit-app-region: no-drag;
+}
+
+.work-timer-btn {
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(95, 216, 95, 0.15);
+  color: var(--green);
+  font-size: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.work-timer-btn:hover {
+  background: rgba(95, 216, 95, 0.3);
+}
+
+.work-timer.working .work-timer-btn {
+  background: rgba(255, 173, 86, 0.15);
+  color: var(--accent);
+}
+
+.work-timer.working .work-timer-btn:hover {
+  background: rgba(255, 173, 86, 0.3);
+}
+
+.work-timer-display {
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  min-width: 32px;
+}
+
+.work-timer.working .work-timer-display {
+  color: var(--green);
+  animation: swBlink 1.5s ease-in-out infinite;
+}
+
 .sticker-controls {
   display: flex;
   gap: 3px;

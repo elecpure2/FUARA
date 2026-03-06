@@ -9,6 +9,7 @@ const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
 let currentView = 'today';
+let currentSubTab = 'today';
 let currentProjectId = null;
 let currentDate = todayYmd();
 const expandedTasks = new Set();
@@ -38,7 +39,7 @@ async function init() {
     loadTasks();
   });
   window.orbit.onNotesChanged(() => {
-    if (currentView === 'notes') renderNotes(selectedNoteId);
+    if (currentView === 'notes') renderNotesWithSections(selectedNoteId);
   });
   window.orbit.onFocusNewTask(() => $('#new-task-title').focus());
 }
@@ -64,23 +65,62 @@ async function loadProjects() {
   });
 }
 
+// ── Effort Banner ──
+
+function buildEffortMessage(stats) {
+  if (!stats) return null;
+  const { today, vsYesterday, vsWeekAvg } = stats;
+  if (today.score === 0) return { icon: '💪', text: '오늘도 화이팅!', cls: 'neutral' };
+  if (vsYesterday !== null && vsYesterday > 0) return { icon: '🔥', text: `어제보다 ${vsYesterday}% 더 했어요!`, cls: 'hot' };
+  if (vsWeekAvg !== null && vsWeekAvg >= 0) return { icon: '📈', text: '이번 주 평균 이상!', cls: 'good' };
+  if (vsYesterday !== null && vsYesterday <= 0) return { icon: '🌱', text: '천천히 시작해볼까요?', cls: 'calm' };
+  return { icon: '💪', text: '오늘도 화이팅!', cls: 'neutral' };
+}
+
+async function renderEffortBanner(containerSel) {
+  let banner = document.querySelector(`${containerSel} .effort-banner`);
+  if (!window.orbit.getEffortStats) { if (banner) banner.remove(); return; }
+  try {
+    const stats = await window.orbit.getEffortStats();
+    const msg = buildEffortMessage(stats);
+    if (!msg) { if (banner) banner.remove(); return; }
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.className = 'effort-banner';
+      const container = document.querySelector(containerSel);
+      container.prepend(banner);
+    }
+    banner.className = `effort-banner effort-${msg.cls}`;
+    banner.textContent = `${msg.icon} ${msg.text}`;
+  } catch { if (banner) banner.remove(); }
+}
+
 // ── Tasks ──
 
 async function loadTasks() {
   const taskList = $('#task-list');
   const calView = $('#calendar-view');
   const notesView = $('#notes-view');
+  const schedView = $('#schedule-view');
   const addBar = document.querySelector('.add-task-bar');
+  const addSchedBar = document.querySelector('.add-schedule-bar');
+  const subTabBar = $('#sub-tab-bar');
   const headerActions = document.querySelector('.header-actions');
   updateHeaderDateButtons();
 
+  // Hide everything first
+  taskList.classList.add('hidden');
+  calView.classList.add('hidden');
+  notesView.classList.add('hidden');
+  schedView.classList.add('hidden');
+  addBar.classList.add('hidden');
+  addSchedBar.classList.add('hidden');
+  subTabBar.classList.add('hidden');
+  $('#in-progress-section').classList.add('hidden');
+
   if (currentView === 'calendar') {
-    taskList.classList.add('hidden');
     calView.classList.remove('hidden');
-    notesView.classList.add('hidden');
-    addBar.classList.add('hidden');
     headerActions.classList.remove('hidden');
-    $('#in-progress-section').classList.add('hidden');
     $('#view-title').textContent = `${calendarYear}년 ${calendarMonth}월`;
     renderFilterBadge();
     await renderCalendar();
@@ -88,23 +128,41 @@ async function loadTasks() {
   }
 
   if (currentView === 'notes') {
-    taskList.classList.add('hidden');
-    calView.classList.add('hidden');
     notesView.classList.remove('hidden');
-    addBar.classList.add('hidden');
     headerActions.classList.add('hidden');
-    $('#in-progress-section').classList.add('hidden');
     $('#view-title').textContent = '아이디어 / 메모';
     renderFilterBadge();
-    await renderNotes();
+    await renderNotesWithSections();
     return;
   }
 
+  if (currentView === 'schedule') {
+    schedView.classList.remove('hidden');
+    addSchedBar.classList.remove('hidden');
+    headerActions.classList.add('hidden');
+    syncDatePicker();
+    const schedDateInput = $('#new-schedule-date');
+    if (schedDateInput) schedDateInput.value = currentDate;
+    $('#view-title').textContent = '스케줄';
+    renderFilterBadge();
+    await renderSchedule(currentDate);
+    renderEffortBanner('#schedule-view');
+    return;
+  }
+
+  // To-Do views (today / date / project)
   taskList.classList.remove('hidden');
-  calView.classList.add('hidden');
-  notesView.classList.add('hidden');
   addBar.classList.remove('hidden');
   headerActions.classList.remove('hidden');
+
+  // Show sub-tabs only for today/date views (not project)
+  if (currentView !== 'project') {
+    subTabBar.classList.remove('hidden');
+    // Sync sub-tab active state
+    subTabBar.querySelectorAll('.sub-tab').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.subtab === currentSubTab);
+    });
+  }
 
   const pid = activeProjectFilter ? activeProjectFilter.id : undefined;
   let tasks;
@@ -113,7 +171,7 @@ async function loadTasks() {
     currentDate = todayYmd();
     syncDatePicker();
     tasks = await window.orbit.getTodayTasks(pid);
-    $('#view-title').textContent = '오늘 할 일';
+    $('#view-title').textContent = 'To-Do';
   } else if (currentView === 'project' && currentProjectId) {
     tasks = await window.orbit.getTasksByProject(currentProjectId);
     const projects = await window.orbit.getProjects();
@@ -122,12 +180,401 @@ async function loadTasks() {
   } else {
     syncDatePicker();
     tasks = await window.orbit.getTasksByDate(currentDate, pid);
-    $('#view-title').textContent = currentDate;
+    $('#view-title').textContent = currentView === 'date' && currentSubTab === 'all' ? currentDate : 'To-Do';
   }
 
   renderFilterBadge();
   renderTasks(tasks);
   renderInProgress(tasks);
+  renderEffortBanner('.main-content');
+}
+
+// ── Project Custom Sections (inside Notes view) ──
+
+let activeSectionTagFilter = null;
+let activeNotesTab = 'notes'; // 'notes' or section ID (number)
+
+async function renderNotesWithSections(preferredNoteId) {
+  const container = $('#notes-view');
+  const pid = activeProjectFilter ? activeProjectFilter.id : undefined;
+
+  if (!pid) {
+    activeNotesTab = 'notes';
+    await renderNotes(preferredNoteId);
+    return;
+  }
+
+  const sections = await window.orbit.getSections(pid);
+  const hasSections = sections && sections.length > 0;
+
+  if (!hasSections) {
+    activeNotesTab = 'notes';
+    await renderNotes(preferredNoteId);
+    return;
+  }
+
+  for (const sec of sections) {
+    const secItems = await window.orbit.getItems(sec.id);
+    sec._itemCount = secItems ? secItems.length : 0;
+  }
+
+  const notesCount = (await window.orbit.getNotes(pid))?.length || 0;
+
+  const tabsHtml = [
+    `<button class="section-tab ${activeNotesTab === 'notes' ? 'active' : ''}" data-notes-tab="notes">&#128221; 노트 ${notesCount > 0 ? `<span class="section-tab-badge">${notesCount}</span>` : ''}</button>`,
+    ...sections.map(sec => {
+      const isActive = activeNotesTab === sec.id;
+      const icon = sec.section_type === 'reference_doc' ? '&#128196;' : '&#128172;';
+      const badge = sec._itemCount > 0 ? `<span class="section-tab-badge">${sec._itemCount}</span>` : '';
+      return `<button class="section-tab ${isActive ? 'active' : ''}" data-notes-tab="${sec.id}">${icon} ${escHtml(sec.title)} ${badge}</button>`;
+    }),
+    `<button class="section-tab section-tab-add" id="btn-add-section" title="섹션 추가">+</button>`
+  ].join('');
+
+  const tabBarHtml = `<div class="sections-tab-bar notes-sections-tab-bar">${tabsHtml}</div>`;
+
+  if (activeNotesTab === 'notes') {
+    container.innerHTML = `${tabBarHtml}<div class="notes-tab-content" id="notes-tab-content"></div>`;
+    const notesContent = $('#notes-tab-content');
+    await renderNotesInto(notesContent, preferredNoteId, pid);
+  } else {
+    const sec = sections.find(s => s.id === activeNotesTab);
+    if (!sec) {
+      activeNotesTab = 'notes';
+      await renderNotesWithSections(preferredNoteId);
+      return;
+    }
+    const items = await window.orbit.getItems(sec.id);
+    container.innerHTML = `
+      ${tabBarHtml}
+      <div class="sections-body-in-notes">
+        ${renderSection(sec, items, pid)}
+      </div>
+    `;
+    bindSectionEvents(pid);
+  }
+
+  container.querySelectorAll('.section-tab[data-notes-tab]').forEach(tab => {
+    tab.addEventListener('click', async () => {
+      const val = tab.dataset.notesTab;
+      activeNotesTab = val === 'notes' ? 'notes' : Number(val);
+      await renderNotesWithSections();
+    });
+  });
+}
+
+function renderSection(section, items, projectId) {
+  if (section.section_type === 'reference_doc') {
+    return renderReferenceDocSection(section, items);
+  }
+  return renderDialogueLibrarySection(section, items);
+}
+
+function renderReferenceDocSection(section, items) {
+  const content = items.length > 0 ? (items[0].content || '') : '';
+  return `
+    <div class="section-block" data-section-id="${section.id}" data-type="reference_doc">
+      <div class="section-header">
+        <span class="section-title">${escHtml(section.title)}</span>
+        <div class="section-actions">
+          <button class="btn-section-edit-doc" data-section-id="${section.id}" title="편집">&#9998;</button>
+          <button class="btn-section-delete" data-section-id="${section.id}" title="삭제">&times;</button>
+        </div>
+      </div>
+      <div class="section-doc-content">${escHtml(content).replace(/\n/g, '<br>')}</div>
+    </div>
+  `;
+}
+
+function renderDialogueLibrarySection(section, items) {
+  const allTags = new Set();
+  items.forEach(item => {
+    if (item.tags) {
+      try { JSON.parse(item.tags).forEach(t => allTags.add(t)); } catch (_) {}
+    }
+  });
+
+  const tagList = [...allTags].sort();
+  const filtered = activeSectionTagFilter
+    ? items.filter(item => {
+        if (!item.tags) return false;
+        try { return JSON.parse(item.tags).includes(activeSectionTagFilter); } catch (_) { return false; }
+      })
+    : items;
+
+  const tagsHtml = tagList.length > 0 ? `
+    <div class="section-tag-filter">
+      <button class="tag-btn ${!activeSectionTagFilter ? 'active' : ''}" data-tag="">전체</button>
+      ${tagList.map(t => `<button class="tag-btn ${activeSectionTagFilter === t ? 'active' : ''}" data-tag="${escHtml(t)}">${escHtml(t)}</button>`).join('')}
+    </div>
+  ` : '';
+
+  const itemsHtml = filtered.map(item => {
+    const tags = item.tags ? (() => { try { return JSON.parse(item.tags); } catch (_) { return []; } })() : [];
+    return `
+      <div class="section-item-card" data-item-id="${item.id}">
+        <div class="section-item-header">
+          <span class="section-item-title">${escHtml(item.title || '(제목 없음)')}</span>
+          <div class="section-item-actions">
+            <button class="btn-item-edit" data-item-id="${item.id}" title="편집">&#9998;</button>
+            <button class="btn-item-delete" data-item-id="${item.id}" title="삭제">&times;</button>
+          </div>
+        </div>
+        ${tags.length > 0 ? `<div class="section-item-tags">${tags.map(t => `<span class="item-tag">${escHtml(t)}</span>`).join('')}</div>` : ''}
+        ${item.content ? `<div class="section-item-content">${escHtml(item.content).replace(/\n/g, '<br>')}</div>` : ''}
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div class="section-block" data-section-id="${section.id}" data-type="dialogue_library">
+      <div class="section-header">
+        <span class="section-title">${escHtml(section.title)}</span>
+        <div class="section-actions">
+          <button class="btn-section-copy-all" data-section-id="${section.id}" title="전체 복사">&#128203; 전체 복사</button>
+          <button class="btn-section-add-item" data-section-id="${section.id}" title="아이템 추가">+</button>
+          <button class="btn-section-delete" data-section-id="${section.id}" title="삭제">&times;</button>
+        </div>
+      </div>
+      ${tagsHtml}
+      <div class="section-items-list">
+        ${itemsHtml || '<div class="section-items-empty">아이템이 없습니다</div>'}
+      </div>
+    </div>
+  `;
+}
+
+function bindSectionEvents(projectId) {
+  const addBtn = document.querySelector('#btn-add-section');
+  if (addBtn) addBtn.addEventListener('click', () => showAddSectionModal(projectId));
+
+  document.querySelectorAll('.tag-btn[data-tag]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      activeSectionTagFilter = btn.dataset.tag || null;
+      await renderNotesWithSections();
+    });
+  });
+
+  document.querySelectorAll('.btn-section-delete').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const ok = await showConfirmDialog('이 섹션을 삭제할까요?');
+      if (!ok) return;
+      await window.orbit.deleteSection(Number(btn.dataset.sectionId));
+      await renderNotesWithSections();
+    });
+  });
+
+  document.querySelectorAll('.btn-section-add-item').forEach(btn => {
+    btn.addEventListener('click', () => {
+      showAddItemModal(Number(btn.dataset.sectionId), projectId);
+    });
+  });
+
+  document.querySelectorAll('.btn-item-delete').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await window.orbit.deleteItem(Number(btn.dataset.itemId));
+      await renderNotesWithSections();
+    });
+  });
+
+  document.querySelectorAll('.btn-item-edit').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const itemId = Number(btn.dataset.itemId);
+      const allItems = await window.orbit.getAllItemsByProject(projectId);
+      const item = allItems.find(i => i.id === itemId);
+      if (item) showEditItemModal(item, projectId);
+    });
+  });
+
+  document.querySelectorAll('.btn-section-copy-all').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const sectionId = Number(btn.dataset.sectionId);
+      const sections = await window.orbit.getSections(projectId);
+      let md = '';
+
+      for (const sec of sections) {
+        const items = await window.orbit.getItems(sec.id);
+        md += `# ${sec.title}\n\n`;
+        if (sec.section_type === 'reference_doc') {
+          for (const item of items) {
+            if (item.content) md += `${item.content}\n\n`;
+          }
+        } else {
+          for (const item of items) {
+            const tags = item.tags ? (() => { try { return JSON.parse(item.tags).join(', '); } catch (_) { return ''; } })() : '';
+            md += `## ${item.title || '(untitled)'}`;
+            if (tags) md += `  [${tags}]`;
+            md += '\n';
+            if (item.content) md += `${item.content}\n`;
+            md += '\n';
+          }
+        }
+      }
+
+      await navigator.clipboard.writeText(md);
+      btn.textContent = '복사됨!';
+      setTimeout(() => { btn.innerHTML = '&#128203; 전체 복사'; }, 1500);
+    });
+  });
+
+  document.querySelectorAll('.btn-section-edit-doc').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const sectionId = Number(btn.dataset.sectionId);
+      const items = await window.orbit.getItems(sectionId);
+      const existing = items.length > 0 ? items[0] : null;
+      showEditDocModal(sectionId, existing, projectId);
+    });
+  });
+}
+
+function showAddSectionModal(projectId) {
+  let overlay = document.getElementById('section-modal-overlay');
+  if (overlay) overlay.remove();
+
+  overlay = document.createElement('div');
+  overlay.id = 'section-modal-overlay';
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h3>커스텀 섹션 추가</h3>
+      <input type="text" class="modal-input" id="section-title-input" placeholder="섹션 제목" />
+      <select class="modal-input" id="section-type-input">
+        <option value="dialogue_library">대사/아이템 라이브러리</option>
+        <option value="reference_doc">참고 문서</option>
+        <option value="checklist">체크리스트</option>
+      </select>
+      <div class="modal-actions">
+        <button class="btn-cancel" id="btn-section-cancel">취소</button>
+        <button class="btn-confirm" id="btn-section-confirm">추가</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#section-title-input').focus();
+  overlay.querySelector('#btn-section-cancel').addEventListener('click', () => overlay.remove());
+  overlay.querySelector('#btn-section-confirm').addEventListener('click', async () => {
+    const title = overlay.querySelector('#section-title-input').value.trim();
+    const sectionType = overlay.querySelector('#section-type-input').value;
+    if (!title) return;
+    await window.orbit.createSection({ project_id: projectId, section_type: sectionType, title });
+    overlay.remove();
+    await renderProjectSections(projectId);
+  });
+  overlay.querySelector('#section-title-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') overlay.querySelector('#btn-section-confirm').click();
+    if (e.key === 'Escape') overlay.remove();
+  });
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+}
+
+function showAddItemModal(sectionId, projectId) {
+  let overlay = document.getElementById('item-modal-overlay');
+  if (overlay) overlay.remove();
+
+  overlay = document.createElement('div');
+  overlay.id = 'item-modal-overlay';
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal item-edit-modal">
+      <h3>아이템 추가</h3>
+      <input type="text" class="modal-input" id="item-title-input" placeholder="제목" />
+      <textarea class="modal-input item-content-area" id="item-content-input" placeholder="내용 (대사 텍스트, 메모 등)" rows="5"></textarea>
+      <input type="text" class="modal-input" id="item-tags-input" placeholder="태그 (쉼표 구분: Lv1, BodyTouch, 완성)" />
+      <div class="modal-actions">
+        <button class="btn-cancel" id="btn-item-cancel">취소</button>
+        <button class="btn-confirm" id="btn-item-confirm">추가</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#item-title-input').focus();
+  overlay.querySelector('#btn-item-cancel').addEventListener('click', () => overlay.remove());
+  overlay.querySelector('#btn-item-confirm').addEventListener('click', async () => {
+    const title = overlay.querySelector('#item-title-input').value.trim();
+    const content = overlay.querySelector('#item-content-input').value.trim();
+    const tagsRaw = overlay.querySelector('#item-tags-input').value.trim();
+    const tags = tagsRaw ? JSON.stringify(tagsRaw.split(',').map(t => t.trim()).filter(Boolean)) : null;
+    await window.orbit.createItem({ section_id: sectionId, title: title || null, content: content || null, tags });
+    overlay.remove();
+    await renderProjectSections(projectId);
+  });
+  overlay.querySelector('#item-title-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') overlay.remove();
+  });
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+}
+
+function showEditItemModal(item, projectId) {
+  let overlay = document.getElementById('item-modal-overlay');
+  if (overlay) overlay.remove();
+
+  const existingTags = item.tags ? (() => { try { return JSON.parse(item.tags).join(', '); } catch (_) { return ''; } })() : '';
+
+  overlay = document.createElement('div');
+  overlay.id = 'item-modal-overlay';
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal item-edit-modal">
+      <h3>아이템 수정</h3>
+      <input type="text" class="modal-input" id="item-title-input" value="${escHtml(item.title || '')}" placeholder="제목" />
+      <textarea class="modal-input item-content-area" id="item-content-input" placeholder="내용" rows="5">${escHtml(item.content || '')}</textarea>
+      <input type="text" class="modal-input" id="item-tags-input" value="${escHtml(existingTags)}" placeholder="태그 (쉼표 구분)" />
+      <div class="modal-actions">
+        <button class="btn-cancel" id="btn-item-cancel">취소</button>
+        <button class="btn-confirm" id="btn-item-confirm">저장</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#item-title-input').focus();
+  overlay.querySelector('#btn-item-cancel').addEventListener('click', () => overlay.remove());
+  overlay.querySelector('#btn-item-confirm').addEventListener('click', async () => {
+    const title = overlay.querySelector('#item-title-input').value.trim();
+    const content = overlay.querySelector('#item-content-input').value.trim();
+    const tagsRaw = overlay.querySelector('#item-tags-input').value.trim();
+    const tags = tagsRaw ? JSON.stringify(tagsRaw.split(',').map(t => t.trim()).filter(Boolean)) : null;
+    await window.orbit.updateItem(item.id, { title: title || null, content: content || null, tags });
+    overlay.remove();
+    await renderProjectSections(projectId);
+  });
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+}
+
+function showEditDocModal(sectionId, existing, projectId) {
+  let overlay = document.getElementById('item-modal-overlay');
+  if (overlay) overlay.remove();
+
+  overlay = document.createElement('div');
+  overlay.id = 'item-modal-overlay';
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal item-edit-modal">
+      <h3>문서 편집</h3>
+      <textarea class="modal-input item-content-area" id="doc-content-input" placeholder="내용을 입력하세요..." rows="12">${escHtml(existing?.content || '')}</textarea>
+      <div class="modal-actions">
+        <button class="btn-cancel" id="btn-doc-cancel">취소</button>
+        <button class="btn-confirm" id="btn-doc-confirm">저장</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#doc-content-input').focus();
+  overlay.querySelector('#btn-doc-cancel').addEventListener('click', () => overlay.remove());
+  overlay.querySelector('#btn-doc-confirm').addEventListener('click', async () => {
+    const content = overlay.querySelector('#doc-content-input').value.trim();
+    if (existing) {
+      await window.orbit.updateItem(existing.id, { content: content || null });
+    } else {
+      await window.orbit.createItem({ section_id: sectionId, content: content || null });
+    }
+    overlay.remove();
+    await renderProjectSections(projectId);
+  });
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
 }
 
 function renderInProgress(tasks) {
@@ -333,7 +780,10 @@ function renderTaskCard(t) {
 }
 
 async function renderNotes(preferredId) {
-  const container = $('#notes-view');
+  await renderNotesInto($('#notes-view'), preferredId);
+}
+
+async function renderNotesInto(container, preferredId) {
   const pid = activeProjectFilter ? activeProjectFilter.id : undefined;
   const notes = await window.orbit.getNotes(pid);
 
@@ -603,7 +1053,7 @@ async function createNoteAndSelect() {
     project_id: activeProjectFilter ? activeProjectFilter.id : null,
   });
   selectedNoteId = note.id;
-  await renderNotes(selectedNoteId);
+  await renderNotesWithSections(selectedNoteId);
   const titleEl = $('#note-editor-title');
   if (titleEl) {
     titleEl.focus();
@@ -638,7 +1088,7 @@ async function saveSelectedNote() {
   const fields = getNoteEditorData();
   if (!fields) return;
   await window.orbit.updateNote(selectedNoteId, fields);
-  await renderNotes(selectedNoteId);
+  await renderNotesWithSections(selectedNoteId);
 }
 
 async function deleteSelectedNote() {
@@ -647,7 +1097,7 @@ async function deleteSelectedNote() {
   if (!ok) return;
   await window.orbit.deleteNote(selectedNoteId);
   selectedNoteId = null;
-  await renderNotes();
+  await renderNotesWithSections();
 }
 
 function noteCategoryOptions(selected) {
@@ -715,7 +1165,9 @@ function setSidebarActive(view) {
   $$('.sidebar-item').forEach(el => {
     if (!el.classList.contains('project-item')) el.classList.remove('active');
   });
-  const target = document.querySelector(`.sidebar-item[data-view="${view}"]`);
+  // Map internal views to sidebar data-view
+  const sidebarView = (view === 'today' || view === 'date') ? 'todo' : view;
+  const target = document.querySelector(`.sidebar-item[data-view="${sidebarView}"]`);
   if (target) target.classList.add('active');
 }
 
@@ -746,7 +1198,7 @@ function updateHeaderDateButtons() {
   const nextBtn = $('#btn-date-next');
   if (!prevBtn || !nextBtn) return;
 
-  const canNavigate = currentView !== 'project' && currentView !== 'notes';
+  const canNavigate = currentView !== 'project' && currentView !== 'notes' && currentView !== 'schedule';
   prevBtn.classList.toggle('hidden', !canNavigate);
   nextBtn.classList.toggle('hidden', !canNavigate);
 }
@@ -771,7 +1223,8 @@ async function moveHeaderDate(step) {
   const baseDate = currentView === 'today' ? todayYmd() : currentDate;
   currentDate = shiftDateYmd(baseDate, step);
   currentView = 'date';
-  setSidebarActive('all');
+  currentSubTab = 'all';
+  setSidebarActive('todo');
   await loadTasks();
 }
 
@@ -814,8 +1267,10 @@ function bindEvents() {
       });
       sideItem.classList.add('active');
 
-      if (view === 'all') {
-        currentView = 'date';
+      if (view === 'todo') {
+        currentView = currentSubTab === 'all' ? 'date' : 'today';
+      } else if (view === 'schedule') {
+        currentView = 'schedule';
       } else if (view === 'calendar') {
         currentView = 'calendar';
       } else if (view === 'notes') {
@@ -823,6 +1278,21 @@ function bindEvents() {
       } else {
         currentView = 'today';
       }
+      await loadTasks();
+      return;
+    }
+
+    // Sub-tab click (today / all)
+    const subTab = e.target.closest('.sub-tab[data-subtab]');
+    if (subTab) {
+      const tab = subTab.dataset.subtab;
+      currentSubTab = tab;
+      if (tab === 'today') {
+        currentView = 'today';
+      } else {
+        currentView = 'date';
+      }
+      setSidebarActive('todo');
       await loadTasks();
       return;
     }
@@ -900,7 +1370,7 @@ function bindEvents() {
     const noteListItem = e.target.closest('.note-list-item');
     if (noteListItem) {
       selectedNoteId = Number(noteListItem.dataset.id);
-      await renderNotes(selectedNoteId);
+      await renderNotesWithSections(selectedNoteId);
       return;
     }
 
@@ -932,12 +1402,6 @@ function bindEvents() {
     }
 
     if (e.target.id === 'note-editor-title' && e.key === 'Enter') {
-      e.preventDefault();
-      await saveSelectedNote();
-      return;
-    }
-
-    if (e.target.id === 'note-editor-content' && e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       await saveSelectedNote();
       return;
@@ -991,21 +1455,6 @@ function bindEvents() {
 
   // Subtask estimate change
   document.addEventListener('change', async (e) => {
-    if (e.target.id === 'note-editor-title') {
-      updateNoteDirty();
-      return;
-    }
-
-    if (e.target.id === 'note-editor-category') {
-      updateNoteDirty();
-      return;
-    }
-
-    if (e.target.id === 'note-editor-pinned') {
-      updateNoteDirty();
-      return;
-    }
-
     const estInput = e.target.closest('.subtask-est-input');
     if (estInput) {
       const id = Number(estInput.dataset.id);
@@ -1020,12 +1469,60 @@ function bindEvents() {
     if (e.key === 'Enter') addTask();
   });
 
+  // Add schedule
+  $('#btn-add-schedule').addEventListener('click', addSchedule);
+  $('#new-schedule-title').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') addSchedule();
+  });
+
+  // Recurrence type toggle
+  $('#new-schedule-recurrence').addEventListener('change', (e) => {
+    const row = $('#recurrence-days-row');
+    if (e.target.value === 'weekly') row.classList.remove('hidden');
+    else row.classList.add('hidden');
+  });
+
+  // Day buttons toggle
+  document.querySelectorAll('#recurrence-days-row .day-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      btn.classList.toggle('active');
+    });
+  });
+
+  // Time input auto-format
+  document.querySelectorAll('.time-input-custom').forEach(el => {
+    el.addEventListener('blur', () => {
+      const formatted = formatTimeInput(el.value);
+      if (formatted) el.value = formatted;
+    });
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const formatted = formatTimeInput(el.value);
+        if (formatted) el.value = formatted;
+        // Tab to next input or submit
+        const next = el.nextElementSibling;
+        if (next && next.tagName === 'SPAN') {
+          const nextInput = next.nextElementSibling;
+          if (nextInput) nextInput.focus();
+        } else {
+          addSchedule();
+        }
+      }
+    });
+  });
+
   // Date picker
   $('#date-picker').addEventListener('change', async (e) => {
     currentDate = e.target.value;
-    currentView = 'date';
-    setSidebarActive('all');
-    await loadTasks();
+    if (currentView === 'schedule') {
+      await renderSchedule(currentDate);
+    } else {
+      currentView = 'date';
+      currentSubTab = 'all';
+      setSidebarActive('todo');
+      await loadTasks();
+    }
   });
 
   $('#btn-date-prev').addEventListener('click', async () => {
@@ -1172,11 +1669,559 @@ async function addTask() {
     data.project_id = currentProjectId;
   }
 
+  if (activeProjectFilter) {
+    data.project_id = activeProjectFilter.id;
+  }
+
   await window.orbit.createTask(data);
   titleEl.value = '';
   $('#new-task-estimate').value = '';
   $('#new-task-priority').value = 'normal';
   titleEl.focus();
+}
+
+function formatTimeInput(raw) {
+  if (!raw) return '';
+  const digits = raw.replace(/[^0-9]/g, '');
+  if (digits.length === 0) return '';
+  let hh, mm;
+  if (digits.length <= 2) {
+    hh = digits.padStart(2, '0');
+    mm = '00';
+  } else if (digits.length === 3) {
+    hh = '0' + digits[0];
+    mm = digits.slice(1);
+  } else {
+    hh = digits.slice(0, 2);
+    mm = digits.slice(2, 4);
+  }
+  hh = String(Math.min(23, Number(hh))).padStart(2, '0');
+  mm = String(Math.min(59, Number(mm))).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+async function addSchedule() {
+  const titleEl = $('#new-schedule-title');
+  const startEl = $('#new-schedule-start');
+  const endEl = $('#new-schedule-end');
+  const recurrenceEl = $('#new-schedule-recurrence');
+  const title = titleEl.value.trim();
+  const start = formatTimeInput(startEl.value);
+  const end = formatTimeInput(endEl.value);
+  if (!title || !start || !end) return;
+
+  startEl.value = start;
+  endEl.value = end;
+
+  const recurrenceType = recurrenceEl.value;
+  let recurrenceDays = null;
+  if (recurrenceType === 'weekly') {
+    const selected = [...document.querySelectorAll('#recurrence-days-row .day-btn.active')]
+      .map(b => b.dataset.day);
+    if (selected.length === 0) return; // 요일 미선택 시 무시
+    recurrenceDays = selected.join(',');
+  }
+
+  const dateEl = $('#new-schedule-date');
+  const schedDate = dateEl.value || currentDate;
+
+  await window.orbit.createSchedule({
+    title,
+    date: schedDate,
+    start_time: start,
+    end_time: end,
+    project_id: activeProjectFilter ? activeProjectFilter.id : null,
+    recurrence_type: recurrenceType,
+    recurrence_days: recurrenceDays,
+  });
+  titleEl.value = '';
+  startEl.value = '';
+  endEl.value = '';
+  recurrenceEl.value = 'none';
+  $('#recurrence-days-row').classList.add('hidden');
+  document.querySelectorAll('#recurrence-days-row .day-btn').forEach(b => b.classList.remove('active'));
+  titleEl.focus();
+  await renderSchedule(currentDate);
+}
+
+async function renderSchedule(date) {
+  const container = $('#schedule-view');
+  const pid = activeProjectFilter ? activeProjectFilter.id : undefined;
+  const schedules = await window.orbit.getSchedules(date, pid);
+
+  const alarmType = localStorage.getItem('alarm-source-type') || 'file';
+  const soundPath = localStorage.getItem('alarm-sound-path');
+  const ytUrl = localStorage.getItem('alarm-youtube-url');
+  let sourceLabel = '설정 안 됨';
+  if (alarmType === 'file' && soundPath) sourceLabel = '🎵 ' + soundPath.split(/[\\/]/).pop();
+  else if (alarmType === 'youtube' && ytUrl) sourceLabel = '▶ YouTube';
+
+  // 날짜 파싱
+  const dateObj = new Date(date + 'T00:00:00');
+  const dayNames = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
+  const isToday = date === todayYmd();
+  const dayLabel = isToday ? '오늘' : dayNames[dateObj.getDay()];
+  const monthDay = `${dateObj.getMonth() + 1}월 ${dateObj.getDate()}일`;
+
+  let headerHtml = `
+    <div class="schedule-date-nav">
+      <button class="schedule-nav-btn" id="sched-prev">◀</button>
+      <div class="schedule-date-display">
+        <span class="schedule-date-day ${isToday ? 'today' : ''}">${dayLabel}</span>
+        <span class="schedule-date-full">${dateObj.getFullYear()}년 ${monthDay}</span>
+      </div>
+      <button class="schedule-nav-btn" id="sched-next">▶</button>
+      <button class="schedule-nav-today ${isToday ? 'hidden' : ''}" id="sched-today">오늘</button>
+    </div>
+    <div class="schedule-header-bar">
+      <button class="schedule-sound-btn" id="btn-open-alarm-settings" title="알람 설정">
+        ⚙ <span class="sound-label">${escHtml(sourceLabel)}</span>
+      </button>
+    </div>
+  `;
+
+  if (!schedules || schedules.length === 0) {
+    container.innerHTML = headerHtml + '<div class="empty-state">스케줄이 없습니다</div>';
+    bindScheduleNav(date);
+    bindAlarmSettingsBtn();
+    return;
+  }
+
+  const totalMinutes = schedules.reduce((sum, s) => {
+    if (!s.start_time || !s.end_time) return sum;
+    const [sh, sm] = s.start_time.split(':').map(Number);
+    const [eh, em] = s.end_time.split(':').map(Number);
+    return sum + (eh * 60 + em) - (sh * 60 + sm);
+  }, 0);
+  const totalH = Math.floor(totalMinutes / 60);
+  const totalM = totalMinutes % 60;
+  const totalLabel = totalH > 0 ? (totalM > 0 ? `${totalH}시간 ${totalM}분` : `${totalH}시간`) : `${totalM}분`;
+
+  let workTimeHtml = '';
+  try {
+    if (window.orbit.workTotalByDate) {
+      const workSec = await window.orbit.workTotalByDate(date);
+      if (workSec > 0) {
+        const wH = Math.floor(workSec / 3600);
+        const wM = Math.floor((workSec % 3600) / 60);
+        const wLabel = wH > 0 ? (wM > 0 ? `${wH}시간 ${wM}분` : `${wH}시간`) : `${wM}분`;
+        workTimeHtml = ` · 실제 작업: <strong>${wLabel}</strong>`;
+      }
+    }
+  } catch {}
+  const totalTimeHtml = `<div class="schedule-total-time">할당 시간: <strong>${totalLabel}</strong>${workTimeHtml}</div>`;
+
+  container.innerHTML = headerHtml + totalTimeHtml + schedules.map(s => {
+    const alarmOn = s.alarm_enabled ? 1 : 0;
+    return `
+    <div class="schedule-card" data-id="${s.id}">
+      <div class="schedule-time">
+        <span class="schedule-start">${s.start_time.slice(0, 5)}</span>
+        <span class="schedule-dash">—</span>
+        <span class="schedule-end">${s.end_time.slice(0, 5)}</span>
+      </div>
+      <div class="schedule-body">
+        <span class="schedule-title">${escHtml(s.title)}${s.is_recurring || (s.recurrence_type && s.recurrence_type !== 'none') ? ' <span class="recurrence-badge" title="반복 스케줄">🔄</span>' : ''}</span>
+        ${s.description ? `<span class="schedule-desc">${escHtml(s.description)}</span>` : ''}
+        ${s.project_name ? `<span class="task-project">${escHtml(s.project_name)}</span>` : ''}
+        ${s.recurrence_type === 'daily' ? '<span class="recurrence-info">매일</span>' : ''}
+        ${s.recurrence_type === 'weekly' && s.recurrence_days ? `<span class="recurrence-info">매주 ${s.recurrence_days.split(',').map(d => ['일', '월', '화', '수', '목', '금', '토'][Number(d)]).join(',')}</span>` : ''}
+      </div>
+      <button class="btn-alarm-toggle ${alarmOn ? 'alarm-on' : ''}" data-id="${s.id}" data-alarm="${alarmOn}" title="알람 ${alarmOn ? 'ON' : 'OFF'}">
+        ${alarmOn ? '🔔' : '🔕'}
+      </button>
+      <button class="btn-task-action btn-delete-schedule" data-id="${s.id}" title="삭제">&times;</button>
+    </div>
+  `}).join('');
+
+  bindScheduleNav(date);
+  bindAlarmSettingsBtn();
+
+  container.querySelectorAll('.btn-alarm-toggle').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = Number(btn.dataset.id);
+      const newVal = btn.dataset.alarm === '1' ? 0 : 1;
+      await window.orbit.updateSchedule(id, { alarm_enabled: newVal });
+      await renderSchedule(date);
+    });
+  });
+
+  container.querySelectorAll('.btn-delete-schedule').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await window.orbit.deleteSchedule(Number(btn.dataset.id));
+      await renderSchedule(date);
+    });
+  });
+
+  // Click card to edit
+  container.querySelectorAll('.schedule-card').forEach(card => {
+    card.style.cursor = 'pointer';
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('.btn-alarm-toggle') || e.target.closest('.btn-delete-schedule')) return;
+      const id = Number(card.dataset.id);
+      const s = schedules.find(x => x.id === id);
+      if (s) showScheduleEditModal(s, date);
+    });
+  });
+}
+
+function bindScheduleNav(date) {
+  const prev = document.getElementById('sched-prev');
+  const next = document.getElementById('sched-next');
+  const todayBtn = document.getElementById('sched-today');
+  if (prev) prev.addEventListener('click', async () => {
+    currentDate = shiftDateYmd(currentDate, -1);
+    syncDatePicker();
+    await renderSchedule(currentDate);
+  });
+  if (next) next.addEventListener('click', async () => {
+    currentDate = shiftDateYmd(currentDate, 1);
+    syncDatePicker();
+    await renderSchedule(currentDate);
+  });
+  if (todayBtn) todayBtn.addEventListener('click', async () => {
+    currentDate = todayYmd();
+    syncDatePicker();
+    await renderSchedule(currentDate);
+  });
+}
+
+// ── Schedule edit modal ──
+
+function showScheduleEditModal(schedule, date) {
+  let overlay = document.getElementById('schedule-edit-overlay');
+  if (overlay) overlay.remove();
+
+  const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+  const recType = schedule.recurrence_type || 'none';
+  const recDays = schedule.recurrence_days ? schedule.recurrence_days.split(',').map(Number) : [];
+
+  overlay = document.createElement('div');
+  overlay.id = 'schedule-edit-overlay';
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal schedule-edit-modal">
+      <h3>📝 스케줄 수정</h3>
+
+      <div class="alarm-field">
+        <label class="alarm-label">제목</label>
+        <input type="text" class="modal-input" id="edit-sched-title" value="${escHtml(schedule.title)}" />
+      </div>
+
+      <div class="alarm-field">
+        <label class="alarm-label">날짜</label>
+        <input type="date" class="modal-input" id="edit-sched-date" value="${schedule.date}" />
+      </div>
+
+      <div class="alarm-field">
+        <label class="alarm-label">시간</label>
+        <div class="edit-sched-time-row">
+          <input type="text" class="time-input-custom" id="edit-sched-start" value="${schedule.start_time.slice(0, 5)}" maxlength="5" />
+          <span class="time-separator">~</span>
+          <input type="text" class="time-input-custom" id="edit-sched-end" value="${schedule.end_time.slice(0, 5)}" maxlength="5" />
+        </div>
+      </div>
+
+      <div class="alarm-field">
+        <label class="alarm-label">메모</label>
+        <input type="text" class="modal-input" id="edit-sched-desc" value="${escHtml(schedule.description || '')}" placeholder="선택 사항" />
+      </div>
+
+      <div class="alarm-field">
+        <label class="alarm-label">반복</label>
+        <select class="modal-input" id="edit-sched-recurrence" style="width:auto">
+          <option value="none" ${recType === 'none' ? 'selected' : ''}>반복 안 함</option>
+          <option value="daily" ${recType === 'daily' ? 'selected' : ''}>매일</option>
+          <option value="weekly" ${recType === 'weekly' ? 'selected' : ''}>매주</option>
+        </select>
+      </div>
+
+      <div class="alarm-field edit-sched-days-row ${recType !== 'weekly' ? 'hidden' : ''}" id="edit-sched-days-row">
+        <label class="alarm-label">반복 요일</label>
+        <div class="recurrence-days-row">
+          ${dayNames.map((name, i) => `<button class="day-btn ${recDays.includes(i) ? 'active' : ''}" data-day="${i}">${name}</button>`).join('')}
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn-cancel" id="btn-edit-sched-cancel">취소</button>
+        <button class="btn-add-task" id="btn-edit-sched-save">저장</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  // Recurrence type toggle
+  overlay.querySelector('#edit-sched-recurrence').addEventListener('change', (e) => {
+    const row = overlay.querySelector('#edit-sched-days-row');
+    if (e.target.value === 'weekly') row.classList.remove('hidden');
+    else row.classList.add('hidden');
+  });
+
+  // Day buttons toggle
+  overlay.querySelectorAll('#edit-sched-days-row .day-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      btn.classList.toggle('active');
+    });
+  });
+
+  // Time input auto-format on blur
+  overlay.querySelectorAll('.time-input-custom').forEach(el => {
+    el.addEventListener('blur', () => {
+      const formatted = formatTimeInput(el.value);
+      if (formatted) el.value = formatted;
+    });
+  });
+
+  // Cancel
+  overlay.querySelector('#btn-edit-sched-cancel').addEventListener('click', () => overlay.remove());
+
+  // Save
+  overlay.querySelector('#btn-edit-sched-save').addEventListener('click', async () => {
+    const title = overlay.querySelector('#edit-sched-title').value.trim();
+    const startRaw = overlay.querySelector('#edit-sched-start').value;
+    const endRaw = overlay.querySelector('#edit-sched-end').value;
+    const start = formatTimeInput(startRaw);
+    const end = formatTimeInput(endRaw);
+    if (!title || !start || !end) return;
+
+    const recurrenceType = overlay.querySelector('#edit-sched-recurrence').value;
+    let recurrenceDays = null;
+    if (recurrenceType === 'weekly') {
+      const selected = [...overlay.querySelectorAll('#edit-sched-days-row .day-btn.active')]
+        .map(b => b.dataset.day);
+      if (selected.length === 0) return;
+      recurrenceDays = selected.join(',');
+    }
+
+    await window.orbit.updateSchedule(schedule.id, {
+      title,
+      date: overlay.querySelector('#edit-sched-date').value,
+      start_time: start,
+      end_time: end,
+      description: overlay.querySelector('#edit-sched-desc').value.trim() || null,
+      recurrence_type: recurrenceType,
+      recurrence_days: recurrenceDays,
+    });
+    overlay.remove();
+    await renderSchedule(date);
+  });
+
+  // Close on overlay click
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+
+  // Focus title
+  overlay.querySelector('#edit-sched-title').focus();
+}
+
+// ── Alarm settings modal ──
+
+function bindAlarmSettingsBtn() {
+  const btn = $('#btn-open-alarm-settings');
+  if (!btn) return;
+  btn.addEventListener('click', () => showAlarmSettingsModal());
+}
+
+function showAlarmSettingsModal() {
+  let overlay = document.getElementById('alarm-settings-overlay');
+  if (overlay) overlay.remove();
+
+  const srcType = localStorage.getItem('alarm-source-type') || 'file';
+  const filePath = localStorage.getItem('alarm-sound-path') || '';
+  const ytUrl = localStorage.getItem('alarm-youtube-url') || '';
+  const duration = localStorage.getItem('alarm-duration') || '30';
+  const repeatCount = localStorage.getItem('alarm-repeat') || '1';
+  const fileName = filePath ? filePath.split(/[\\/]/).pop() : '선택 안 됨';
+
+  overlay = document.createElement('div');
+  overlay.id = 'alarm-settings-overlay';
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal alarm-settings-modal">
+      <h3>⚙ 알람 설정</h3>
+
+      <div class="alarm-field">
+        <label class="alarm-label">소스</label>
+        <div class="alarm-radio-group">
+          <label class="alarm-radio"><input type="radio" name="alarm-src" value="file" ${srcType === 'file' ? 'checked' : ''} /> 파일</label>
+          <label class="alarm-radio"><input type="radio" name="alarm-src" value="youtube" ${srcType === 'youtube' ? 'checked' : ''} /> YouTube</label>
+        </div>
+      </div>
+
+      <div class="alarm-field alarm-file-section" ${srcType === 'youtube' ? 'style="display:none"' : ''}>
+        <label class="alarm-label">사운드 파일</label>
+        <div class="alarm-file-row">
+          <span class="alarm-file-name" id="alarm-file-name">${escHtml(fileName)}</span>
+          <button class="btn-add-task" id="btn-pick-alarm-file" style="padding:8px 14px;font-size:12px;">선택</button>
+        </div>
+      </div>
+
+      <div class="alarm-field alarm-yt-section" ${srcType === 'file' ? 'style="display:none"' : ''}>
+        <label class="alarm-label">YouTube URL</label>
+        <input type="text" class="modal-input" id="alarm-yt-url" value="${escHtml(ytUrl)}" placeholder="https://www.youtube.com/watch?v=..." />
+      </div>
+
+      <div class="alarm-field">
+        <label class="alarm-label">재생 시간 (초)</label>
+        <input type="number" class="modal-input" id="alarm-duration" value="${duration}" min="5" max="300" style="width:100px" />
+      </div>
+
+      <div class="alarm-field">
+        <label class="alarm-label">반복 횟수 (5분 간격)</label>
+        <input type="number" class="modal-input" id="alarm-repeat" value="${repeatCount}" min="1" max="10" style="width:100px" />
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn-cancel" id="btn-alarm-cancel">취소</button>
+        <button class="btn-add-task" id="btn-alarm-save">저장</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  // Toggle file/youtube sections
+  overlay.querySelectorAll('input[name="alarm-src"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+      const isFile = radio.value === 'file';
+      overlay.querySelector('.alarm-file-section').style.display = isFile ? '' : 'none';
+      overlay.querySelector('.alarm-yt-section').style.display = isFile ? 'none' : '';
+    });
+  });
+
+  // Pick file
+  overlay.querySelector('#btn-pick-alarm-file').addEventListener('click', async () => {
+    const fp = await window.orbit.selectAlarmSound();
+    if (fp) {
+      localStorage.setItem('alarm-sound-path', fp);
+      overlay.querySelector('#alarm-file-name').textContent = fp.split(/[\\/]/).pop();
+    }
+  });
+
+  // Cancel
+  overlay.querySelector('#btn-alarm-cancel').addEventListener('click', () => overlay.remove());
+
+  // Save
+  overlay.querySelector('#btn-alarm-save').addEventListener('click', () => {
+    const selectedSrc = overlay.querySelector('input[name="alarm-src"]:checked').value;
+    localStorage.setItem('alarm-source-type', selectedSrc);
+    localStorage.setItem('alarm-youtube-url', overlay.querySelector('#alarm-yt-url').value.trim());
+    localStorage.setItem('alarm-duration', overlay.querySelector('#alarm-duration').value || '30');
+    localStorage.setItem('alarm-repeat', overlay.querySelector('#alarm-repeat').value || '1');
+    overlay.remove();
+    if (currentView === 'schedule') renderSchedule(currentDate);
+  });
+
+  // Close on overlay click
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+}
+
+// ── Alarm timer ──
+
+let alarmAudio = null;
+let lastAlarmMinute = '';
+let alarmRepeatTimers = [];
+
+function stopAlarmSound() {
+  if (alarmAudio) { alarmAudio.pause(); alarmAudio = null; }
+  window.orbit.stopYoutubeAlarm();
+  alarmRepeatTimers.forEach(t => clearTimeout(t));
+  alarmRepeatTimers = [];
+}
+
+function playAlarmSound() {
+  const srcType = localStorage.getItem('alarm-source-type') || 'file';
+  const durationSec = Number(localStorage.getItem('alarm-duration')) || 30;
+
+  if (srcType === 'youtube') {
+    const ytUrl = localStorage.getItem('alarm-youtube-url');
+    if (ytUrl) {
+      window.orbit.playYoutubeAlarm(ytUrl);
+      // Auto-stop after duration
+      const t = setTimeout(() => window.orbit.stopYoutubeAlarm(), durationSec * 1000);
+      alarmRepeatTimers.push(t);
+    }
+  } else {
+    const soundPath = localStorage.getItem('alarm-sound-path');
+    if (soundPath) {
+      try {
+        if (alarmAudio) { alarmAudio.pause(); alarmAudio = null; }
+        alarmAudio = new Audio(`file://${soundPath.replace(/\\/g, '/')}`);
+        alarmAudio.volume = 0.7;
+        alarmAudio.play().catch(() => { });
+        // Auto-stop after duration
+        const t = setTimeout(() => {
+          if (alarmAudio) { alarmAudio.pause(); alarmAudio = null; }
+        }, durationSec * 1000);
+        alarmRepeatTimers.push(t);
+      } catch (_) { }
+    }
+  }
+}
+
+setInterval(async () => {
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  const currentMinute = `${hh}:${mm}`;
+  const today = todayYmd();
+
+  if (currentMinute === lastAlarmMinute) return;
+
+  const schedules = await window.orbit.getSchedules(today);
+  const matched = (schedules || []).filter(s =>
+    s.alarm_enabled && s.start_time && s.start_time.slice(0, 5) === currentMinute
+  );
+
+  if (matched.length === 0) return;
+  lastAlarmMinute = currentMinute;
+
+  const repeatCount = Number(localStorage.getItem('alarm-repeat')) || 1;
+  const titles = matched.map(s => s.title).join(', ');
+
+  // First alarm
+  playAlarmSound();
+  showAlarmToast(`🔔 ${currentMinute} — ${titles}`);
+
+  // Repeat alarms (every 5 minutes)
+  for (let i = 1; i < repeatCount; i++) {
+    const t = setTimeout(() => {
+      playAlarmSound();
+      showAlarmToast(`🔔 반복 ${i + 1}/${repeatCount} — ${titles}`);
+    }, i * 5 * 60 * 1000);
+    alarmRepeatTimers.push(t);
+  }
+}, 15000);
+
+function showAlarmToast(message) {
+  let toast = document.getElementById('alarm-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'alarm-toast';
+    toast.className = 'alarm-toast';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = message;
+  toast.classList.remove('hidden');
+  toast.classList.add('show');
+
+  const durationSec = Number(localStorage.getItem('alarm-duration')) || 30;
+  setTimeout(() => {
+    toast.classList.remove('show');
+    toast.classList.add('hidden');
+  }, (durationSec + 2) * 1000);
+
+  toast.addEventListener('click', () => {
+    toast.classList.remove('show');
+    toast.classList.add('hidden');
+    stopAlarmSound();
+  }, { once: true });
 }
 
 function clearProjectModal() {
@@ -1283,10 +2328,27 @@ async function getPlannedByDayForMonth(year, month) {
 async function renderCalendar() {
   const container = $('#calendar-view');
   const pid = activeProjectFilter ? activeProjectFilter.id : undefined;
-  const [completed, plannedByDay] = await Promise.all([
+  const [completed, plannedByDay, effortData, schedules, workMonthData] = await Promise.all([
     window.orbit.getCompletedByMonth(calendarYear, calendarMonth, pid),
     getPlannedByDayForMonth(calendarYear, calendarMonth),
+    (window.orbit.getEffortCalendar ? window.orbit.getEffortCalendar(calendarYear, calendarMonth) : Promise.resolve([])).catch(() => []),
+    (window.orbit.getSchedulesByMonth ? window.orbit.getSchedulesByMonth(calendarYear, calendarMonth) : Promise.resolve([])).catch(() => []),
+    (window.orbit.workTotalByMonth ? window.orbit.workTotalByMonth(calendarYear, calendarMonth) : Promise.resolve([])).catch(() => []),
   ]);
+
+  const workByDay = {};
+  for (const w of workMonthData) { workByDay[w.date] = w.total; }
+
+  const effortByDay = {};
+  let effortSum = 0;
+  for (const e of effortData) { effortByDay[e.date] = e.score; effortSum += e.score; }
+  const effortAvg = effortData.length > 0 ? effortSum / effortData.length : 0;
+
+  const schedByDay = {};
+  for (const s of schedules) {
+    if (!schedByDay[s.date]) schedByDay[s.date] = [];
+    schedByDay[s.date].push(s);
+  }
 
   const byDay = {};
   for (const t of completed) {
@@ -1345,8 +2407,10 @@ async function renderCalendar() {
         subCount: (t.subtasks && t.subtasks.length) || 0,
       })),
     ];
+    const dayScheds = schedByDay[dateStr] || [];
+    const hasWork = previewItems.length > 0 || dayScheds.length > 0;
     const isToday = dateStr === today;
-    const hasWork = previewItems.length > 0;
+    const schedBadge = dayScheds.length > 0 ? `<span class="cal-sched-badge" title="스케줄 ${dayScheds.length}개">📅</span>` : '';
 
     const tasksHtml = previewItems.slice(0, 3).map(item => {
       const hasSubs = item.subCount > 0;
@@ -1356,9 +2420,11 @@ async function renderCalendar() {
     const moreHtml = previewItems.length > 3 ? `<div class="cal-more">+${previewItems.length - 3}</div>` : '';
 
     const isSelected = dateStr === selectedCalDay;
+    const dayEffort = effortByDay[dateStr] || 0;
+    const fireHtml = (dayEffort > 0 && dayEffort >= effortAvg) ? '<span class="cal-day-fire">🔥</span>' : '';
     html += `
       <div class="cal-cell${isToday ? ' cal-today' : ''}${hasWork ? ' cal-active' : ''}${isSelected ? ' cal-selected' : ''}" data-date="${dateStr}">
-        <span class="cal-day">${d}</span>
+        <span class="cal-day">${d}</span>${fireHtml}${schedBadge}
         <div class="cal-tasks">${tasksHtml}${moreHtml}</div>
       </div>
     `;
@@ -1370,7 +2436,8 @@ async function renderCalendar() {
   const activeDays = Object.keys(byDay).length;
   const totalPlanned = Object.values(plannedByDay).reduce((acc, items) => acc + items.length, 0);
   const plannedDays = Object.values(plannedByDay).filter(items => items.length > 0).length;
-  html += `<div class="cal-summary">이번 달: 완료 ${totalCompleted}개 · 예정 ${totalPlanned}개 · 완료일 ${activeDays}일 · 예정일 ${plannedDays}일</div>`;
+  const totalScheds = schedules.length;
+  html += `<div class="cal-summary">이번 달: 완료 ${totalCompleted}개 · 예정 ${totalPlanned}개 · 스케줄 ${totalScheds}개 · 활동일 ${activeDays}일</div>`;
 
   // Detail panel for selected day
   if (selectedCalDay) {
@@ -1386,7 +2453,7 @@ async function renderCalendar() {
       </div>
       <div class="cal-detail-list">`;
 
-    if (dayDoneItems.length === 0 && dayPlannedItems.length === 0) {
+    if (dayDoneItems.length === 0 && dayPlannedItems.length === 0 && (schedByDay[dateStr] || []).length === 0) {
       detailHtml += '<div class="cal-detail-empty">기록 없음</div>';
     }
 
@@ -1441,6 +2508,39 @@ async function renderCalendar() {
           detailHtml += `<div class="cal-detail-desc">${escHtml(t.description)}</div>`;
         }
       }
+    }
+
+    const daySchedItems = schedByDay[dateStr] || [];
+    if (daySchedItems.length > 0) {
+      const schedMins = daySchedItems.reduce((sum, s) => {
+        if (!s.start_time || !s.end_time) return sum;
+        const [sh, sm] = s.start_time.split(':').map(Number);
+        const [eh, em] = s.end_time.split(':').map(Number);
+        return sum + (eh * 60 + em) - (sh * 60 + sm);
+      }, 0);
+      const sH = Math.floor(schedMins / 60);
+      const sM = schedMins % 60;
+      const schedTotal = sH > 0 ? (sM > 0 ? `${sH}시간 ${sM}분` : `${sH}시간`) : `${sM}분`;
+      detailHtml += `<div class="cal-detail-section-title">📅 스케줄 <span class="cal-detail-sched-total">총 ${schedTotal}</span></div>`;
+      for (const s of daySchedItems) {
+        const timeRange = [s.start_time, s.end_time].filter(Boolean).map(t => t.slice(0, 5)).join(' ~ ');
+        detailHtml += `<div class="cal-detail-item cal-detail-sched">
+          <span class="cal-detail-check sched">⏰</span>
+          <span class="cal-detail-title">${escHtml(s.title)}</span>
+          ${timeRange ? `<span class="cal-detail-time">${timeRange}</span>` : ''}
+        </div>`;
+        if (s.description) {
+          detailHtml += `<div class="cal-detail-desc">${escHtml(s.description)}</div>`;
+        }
+      }
+    }
+
+    const dayWorkSec = workByDay[dateStr] || 0;
+    if (dayWorkSec > 0) {
+      const wH = Math.floor(dayWorkSec / 3600);
+      const wM = Math.floor((dayWorkSec % 3600) / 60);
+      const wLabel = wH > 0 ? (wM > 0 ? `${wH}시간 ${wM}분` : `${wH}시간`) : `${wM}분`;
+      detailHtml += `<div class="cal-detail-section-title">⏱ 실제 작업 시간 <span class="cal-detail-work-total">${wLabel}</span></div>`;
     }
 
     detailHtml += `</div>
@@ -1654,9 +2754,8 @@ setInterval(() => {
 // ── Helpers ──
 
 function escHtml(str) {
-  const d = document.createElement('div');
-  d.textContent = str;
-  return d.innerHTML;
+  if (!str) return '';
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function priorityLabel(p) {

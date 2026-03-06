@@ -1,11 +1,28 @@
 const Database = require('better-sqlite3');
-const fs = require('fs');
 const path = require('path');
 
 const DB_PATH = path.join(__dirname, 'fuara.db');
-const LEGACY_DB_PATH = path.join(__dirname, 'orbit.db');
 
 let db;
+
+function genericUpdate(table, id, fields, allowed, { transform, extraSets, returnQuery } = {}) {
+  const d = getDb();
+  const sets = [];
+  const values = [];
+  for (const key of allowed) {
+    if (fields[key] !== undefined) {
+      sets.push(`${key} = ?`);
+      values.push(transform ? transform(key, fields[key]) : fields[key]);
+    }
+  }
+  if (extraSets) {
+    for (const s of extraSets(fields)) sets.push(s);
+  }
+  if (sets.length === 0) return null;
+  values.push(id);
+  d.prepare(`UPDATE ${table} SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+  return d.prepare(returnQuery || `SELECT * FROM ${table} WHERE id = ?`).get(id);
+}
 
 function localDateYmd() {
   const d = new Date();
@@ -15,145 +32,12 @@ function localDateYmd() {
   return `${y}-${m}-${day}`;
 }
 
-function safeMoveFile(src, dst) {
-  if (!fs.existsSync(src)) return;
-  if (fs.existsSync(dst)) return;
-  fs.renameSync(src, dst);
-}
-
-function migrateDbFileIfNeeded() {
-  if (fs.existsSync(DB_PATH)) return;
-  if (!fs.existsSync(LEGACY_DB_PATH)) return;
-
-  try {
-    safeMoveFile(LEGACY_DB_PATH, DB_PATH);
-    safeMoveFile(`${LEGACY_DB_PATH}-wal`, `${DB_PATH}-wal`);
-    safeMoveFile(`${LEGACY_DB_PATH}-shm`, `${DB_PATH}-shm`);
-    safeMoveFile(`${LEGACY_DB_PATH}-journal`, `${DB_PATH}-journal`);
-    console.log('[FUARA][DB] Migrated orbit.db -> fuara.db');
-  } catch (e) {
-    // Keep app usable even if rename fails in some environments
-    console.warn(`[FUARA][DB] Migration skipped: ${e.message}`);
-  }
-}
-
-function pickNewerDbPath() {
-  const newMtime = fs.statSync(DB_PATH).mtimeMs;
-  const legacyMtime = fs.statSync(LEGACY_DB_PATH).mtimeMs;
-  return legacyMtime > newMtime ? LEGACY_DB_PATH : DB_PATH;
-}
-
-function readParentTaskCount(dbPath) {
-  if (!fs.existsSync(dbPath)) return -1;
-
-  let tempDb = null;
-  try {
-    tempDb = new Database(dbPath, { readonly: true, fileMustExist: true });
-    const hasTasks = tempDb.prepare(
-      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks' LIMIT 1"
-    ).get();
-    if (!hasTasks) return 0;
-
-    const row = tempDb.prepare(
-      "SELECT COUNT(*) AS c FROM tasks WHERE parent_id IS NULL"
-    ).get();
-    return Number(row?.c || 0);
-  } catch (_e) {
-    return -1;
-  } finally {
-    if (tempDb) tempDb.close();
-  }
-}
-
-function pickDataRichDbPath() {
-  const newCount = readParentTaskCount(DB_PATH);
-  const legacyCount = readParentTaskCount(LEGACY_DB_PATH);
-  if (newCount === legacyCount) return null;
-  return legacyCount > newCount ? LEGACY_DB_PATH : DB_PATH;
-}
-
-function resolveDbPath() {
-  migrateDbFileIfNeeded();
-
-  const hasNew = fs.existsSync(DB_PATH);
-  const hasLegacy = fs.existsSync(LEGACY_DB_PATH);
-
-  if (hasNew && hasLegacy) {
-    const dataRich = pickDataRichDbPath();
-    if (dataRich) {
-      const chosenName = path.basename(dataRich);
-      const newCount = readParentTaskCount(DB_PATH);
-      const legacyCount = readParentTaskCount(LEGACY_DB_PATH);
-      console.warn(
-        `[FUARA][DB] Both DB files exist. Using task-rich file: ${chosenName} (fuara=${newCount}, orbit=${legacyCount})`
-      );
-      return dataRich;
-    }
-
-    const chosen = pickNewerDbPath();
-    const chosenName = path.basename(chosen);
-    console.warn(`[FUARA][DB] Both DB files exist. Using newer file: ${chosenName}`);
-    return chosen;
-  }
-
-  if (hasNew) return DB_PATH;
-  if (hasLegacy) return LEGACY_DB_PATH;
-  return DB_PATH;
-}
-
-function mergeNotesFromOtherDb(activeDbPath) {
-  const otherDbPath = activeDbPath === DB_PATH ? LEGACY_DB_PATH : DB_PATH;
-  if (!fs.existsSync(otherDbPath)) return;
-
-  let sourceDb = null;
-  try {
-    const current = db.prepare("SELECT COUNT(*) AS c FROM notes").get();
-    if (Number(current?.c || 0) > 0) return;
-
-    sourceDb = new Database(otherDbPath, { readonly: true, fileMustExist: true });
-    const hasNotes = sourceDb.prepare(
-      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='notes' LIMIT 1"
-    ).get();
-    if (!hasNotes) return;
-
-    const rows = sourceDb.prepare(
-      "SELECT title, content, category, pinned, created_at, updated_at FROM notes ORDER BY id ASC"
-    ).all();
-    if (!rows || rows.length === 0) return;
-
-    const insert = db.prepare(`
-      INSERT INTO notes (title, content, category, pinned, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
-    const tx = db.transaction((items) => {
-      for (const n of items) {
-        insert.run(
-          n.title,
-          n.content || null,
-          n.category || 'memo',
-          n.pinned ? 1 : 0,
-          n.created_at || null,
-          n.updated_at || null
-        );
-      }
-    });
-    tx(rows);
-    console.log(`[FUARA][DB] Merged ${rows.length} notes from ${path.basename(otherDbPath)}.`);
-  } catch (e) {
-    console.warn(`[FUARA][DB] Note merge skipped: ${e.message}`);
-  } finally {
-    if (sourceDb) sourceDb.close();
-  }
-}
-
 function getDb() {
   if (!db) {
-    const resolvedPath = resolveDbPath();
-    db = new Database(resolvedPath);
+    db = new Database(DB_PATH);
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
     initTables();
-    mergeNotesFromOtherDb(resolvedPath);
   }
   return db;
 }
@@ -174,10 +58,20 @@ function migrate() {
   if (noteCols.length > 0 && !noteCols.includes('project_id')) {
     db.exec("ALTER TABLE notes ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL");
   }
+
+  const schedCols = db.prepare("PRAGMA table_info(schedules)").all().map(c => c.name);
+  if (schedCols.length > 0 && !schedCols.includes('alarm_enabled')) {
+    db.exec("ALTER TABLE schedules ADD COLUMN alarm_enabled INTEGER DEFAULT 0");
+  }
+  if (schedCols.length > 0 && !schedCols.includes('recurrence_type')) {
+    db.exec("ALTER TABLE schedules ADD COLUMN recurrence_type TEXT DEFAULT 'none'");
+  }
+  if (schedCols.length > 0 && !schedCols.includes('recurrence_days')) {
+    db.exec("ALTER TABLE schedules ADD COLUMN recurrence_days TEXT");
+  }
 }
 
 function initTables() {
-  migrate();
   db.exec(`
     CREATE TABLE IF NOT EXISTS projects (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -211,7 +105,52 @@ function initTables() {
       created_at TEXT DEFAULT (datetime('now','localtime')),
       updated_at TEXT DEFAULT (datetime('now','localtime'))
     );
+
+    CREATE TABLE IF NOT EXISTS schedules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      date TEXT NOT NULL,
+      start_time TEXT NOT NULL,
+      end_time TEXT NOT NULL,
+      description TEXT,
+      project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    );
+
+    CREATE TABLE IF NOT EXISTS project_sections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      section_type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      config TEXT,
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    );
+
+    CREATE TABLE IF NOT EXISTS section_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      section_id INTEGER NOT NULL REFERENCES project_sections(id) ON DELETE CASCADE,
+      title TEXT,
+      content TEXT,
+      tags TEXT,
+      metadata TEXT,
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      updated_at TEXT DEFAULT (datetime('now','localtime'))
+    );
   `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS work_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      elapsed INTEGER DEFAULT 0
+    );
+  `);
+
+  migrate();
 }
 
 // ── Projects ──
@@ -275,24 +214,13 @@ function createNote({ title, content, category, pinned, project_id }) {
 }
 
 function updateNote(id, fields) {
-  const db = getDb();
-  const allowed = ['title', 'content', 'category', 'pinned', 'project_id'];
-  const sets = [];
-  const values = [];
-
-  for (const key of allowed) {
-    if (fields[key] !== undefined) {
-      sets.push(`${key} = ?`);
-      values.push(key === 'pinned' ? (fields[key] ? 1 : 0) : fields[key]);
+  return genericUpdate('notes', id, fields,
+    ['title', 'content', 'category', 'pinned', 'project_id'],
+    {
+      transform: (key, val) => key === 'pinned' ? (val ? 1 : 0) : val,
+      extraSets: () => ["updated_at = datetime('now','localtime')"],
     }
-  }
-
-  if (sets.length === 0) return null;
-  sets.push("updated_at = datetime('now','localtime')");
-  values.push(id);
-
-  db.prepare(`UPDATE notes SET ${sets.join(', ')} WHERE id = ?`).run(...values);
-  return db.prepare('SELECT * FROM notes WHERE id = ?').get(id);
+  );
 }
 
 function deleteNote(id) {
@@ -432,32 +360,13 @@ function createTask({ parent_id, project_id, project, title, description, estima
 }
 
 function updateTask(id, fields) {
-  const db = getDb();
-  const allowed = ['title', 'description', 'estimate_minutes', 'actual_minutes', 'priority', 'status', 'target_date', 'stopwatch_elapsed', 'stopwatch_started_at'];
-  const sets = [];
-  const values = [];
-
-  for (const key of allowed) {
-    if (fields[key] !== undefined) {
-      sets.push(`${key} = ?`);
-      values.push(fields[key]);
+  return genericUpdate('tasks', id, fields,
+    ['title', 'description', 'estimate_minutes', 'actual_minutes', 'priority', 'status', 'target_date', 'stopwatch_elapsed', 'stopwatch_started_at'],
+    {
+      extraSets: (f) => f.status === 'done' ? ["completed_at = datetime('now','localtime')"] : [],
+      returnQuery: `SELECT t.*, p.name AS project_name FROM tasks t LEFT JOIN projects p ON t.project_id = p.id WHERE t.id = ?`,
     }
-  }
-
-  if (fields.status === 'done') {
-    sets.push("completed_at = datetime('now','localtime')");
-  }
-
-  if (sets.length === 0) return null;
-  values.push(id);
-
-  db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...values);
-
-  return db.prepare(`
-    SELECT t.*, p.name AS project_name
-    FROM tasks t LEFT JOIN projects p ON t.project_id = p.id
-    WHERE t.id = ?
-  `).get(id);
+  );
 }
 
 function deleteTask(id) {
@@ -487,11 +396,273 @@ function getCompletedTasksByMonth(year, month, projectId) {
   return getDb().prepare(sql).all(...params);
 }
 
+// ── Schedules ──
+
+function getSchedulesByDate(date, projectId) {
+  // 1) 해당 날짜에 직접 등록된 일반 스케줄
+  let sql = `
+    SELECT s.*, p.name AS project_name
+    FROM schedules s
+    LEFT JOIN projects p ON s.project_id = p.id
+    WHERE s.date = ? AND (s.recurrence_type IS NULL OR s.recurrence_type = 'none')
+  `;
+  const params = [date];
+  if (projectId) { sql += ' AND s.project_id = ?'; params.push(projectId); }
+  sql += ' ORDER BY s.start_time ASC';
+  const normal = getDb().prepare(sql).all(...params);
+
+  // 2) 반복 스케줄 (date 이전에 생성되었고 해당 날짜와 매칭)
+  let recSql = `
+    SELECT s.*, p.name AS project_name
+    FROM schedules s
+    LEFT JOIN projects p ON s.project_id = p.id
+    WHERE s.recurrence_type IS NOT NULL AND s.recurrence_type != 'none'
+      AND s.date <= ?
+  `;
+  const recParams = [date];
+  if (projectId) { recSql += ' AND s.project_id = ?'; recParams.push(projectId); }
+  recSql += ' ORDER BY s.start_time ASC';
+  const recurring = getDb().prepare(recSql).all(...recParams);
+
+  // 요일 매칭 필터
+  const queryDow = new Date(date + 'T00:00:00').getDay(); // 0=일 ~ 6=토
+  const matched = recurring.filter(s => {
+    if (s.recurrence_type === 'daily') return true;
+    if (s.recurrence_type === 'weekly' && s.recurrence_days) {
+      const days = s.recurrence_days.split(',').map(Number);
+      return days.includes(queryDow);
+    }
+    return false;
+  }).map(s => ({ ...s, is_recurring: true }));
+
+  return [...normal, ...matched].sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
+}
+
+function getSchedulesByMonth(year, month) {
+  const start = `${year}-${String(month).padStart(2, '0')}-01`;
+  const lastDay = new Date(year, month, 0).getDate();
+  const end = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+  return getDb().prepare(`
+    SELECT s.*, p.name AS project_name
+    FROM schedules s
+    LEFT JOIN projects p ON s.project_id = p.id
+    WHERE s.date >= ? AND s.date <= ?
+    ORDER BY s.date, s.start_time ASC
+  `).all(start, end);
+}
+
+function createSchedule({ title, date, start_time, end_time, description, project_id, recurrence_type, recurrence_days }) {
+  const resolvedDate = date || localDateYmd();
+  const info = getDb().prepare(`
+    INSERT INTO schedules (title, date, start_time, end_time, description, project_id, recurrence_type, recurrence_days)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(title, resolvedDate, start_time, end_time, description || null, project_id || null, recurrence_type || 'none', recurrence_days || null);
+  return getDb().prepare(`
+    SELECT s.*, p.name AS project_name
+    FROM schedules s LEFT JOIN projects p ON s.project_id = p.id
+    WHERE s.id = ?
+  `).get(info.lastInsertRowid);
+}
+
+function updateSchedule(id, fields) {
+  return genericUpdate('schedules', id, fields,
+    ['title', 'date', 'start_time', 'end_time', 'description', 'project_id', 'alarm_enabled', 'recurrence_type', 'recurrence_days'],
+    { returnQuery: `SELECT s.*, p.name AS project_name FROM schedules s LEFT JOIN projects p ON s.project_id = p.id WHERE s.id = ?` }
+  );
+}
+
+function deleteSchedule(id) {
+  return getDb().prepare('DELETE FROM schedules WHERE id = ?').run(id);
+}
+
+// ── Project Sections ──
+
+function getSectionsByProject(projectId) {
+  return getDb().prepare(`
+    SELECT * FROM project_sections
+    WHERE project_id = ?
+    ORDER BY sort_order ASC, created_at ASC
+  `).all(projectId);
+}
+
+function createSection({ project_id, section_type, title, config, sort_order }) {
+  const info = getDb().prepare(`
+    INSERT INTO project_sections (project_id, section_type, title, config, sort_order)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(project_id, section_type, title, config || null, sort_order || 0);
+  return getDb().prepare('SELECT * FROM project_sections WHERE id = ?').get(info.lastInsertRowid);
+}
+
+function updateSection(id, fields) {
+  return genericUpdate('project_sections', id, fields, ['title', 'section_type', 'config', 'sort_order']);
+}
+
+function deleteSection(id) {
+  return getDb().prepare('DELETE FROM project_sections WHERE id = ?').run(id);
+}
+
+// ── Section Items ──
+
+function getItemsBySection(sectionId) {
+  return getDb().prepare(`
+    SELECT * FROM section_items
+    WHERE section_id = ?
+    ORDER BY sort_order ASC, created_at ASC
+  `).all(sectionId);
+}
+
+function getAllItemsByProject(projectId) {
+  return getDb().prepare(`
+    SELECT si.*, ps.title AS section_title, ps.section_type
+    FROM section_items si
+    JOIN project_sections ps ON si.section_id = ps.id
+    WHERE ps.project_id = ?
+    ORDER BY ps.sort_order ASC, si.sort_order ASC, si.created_at ASC
+  `).all(projectId);
+}
+
+function createItem({ section_id, title, content, tags, metadata, sort_order }) {
+  const info = getDb().prepare(`
+    INSERT INTO section_items (section_id, title, content, tags, metadata, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(section_id, title || null, content || null, tags || null, metadata || null, sort_order || 0);
+  return getDb().prepare('SELECT * FROM section_items WHERE id = ?').get(info.lastInsertRowid);
+}
+
+function updateItem(id, fields) {
+  return genericUpdate('section_items', id, fields,
+    ['title', 'content', 'tags', 'metadata', 'sort_order'],
+    { extraSets: () => ["updated_at = datetime('now','localtime')"] }
+  );
+}
+
+function deleteItem(id) {
+  return getDb().prepare('DELETE FROM section_items WHERE id = ?').run(id);
+}
+
+// ── Effort Score ──
+
+function getEffortForDate(date) {
+  const row = getDb().prepare(`
+    SELECT COUNT(*) as count,
+           COALESCE(SUM(stopwatch_elapsed), 0) as total_sw,
+           SUM(CASE WHEN priority = 'must' THEN 1 ELSE 0 END) as must_count
+    FROM tasks
+    WHERE status = 'done' AND DATE(completed_at) = ?
+  `).get(date);
+  if (!row || row.count === 0) return { date, score: 0, count: 0 };
+  const score = row.count + (row.total_sw / 1000 / 60 / 30) + (row.must_count * 1.5);
+  return { date, score: Math.round(score * 10) / 10, count: row.count };
+}
+
+function getEffortRange(startDate, endDate) {
+  const rows = getDb().prepare(`
+    SELECT DATE(completed_at) as day,
+           COUNT(*) as count,
+           COALESCE(SUM(stopwatch_elapsed), 0) as total_sw,
+           SUM(CASE WHEN priority = 'must' THEN 1 ELSE 0 END) as must_count
+    FROM tasks
+    WHERE status = 'done'
+      AND DATE(completed_at) >= ? AND DATE(completed_at) <= ?
+    GROUP BY DATE(completed_at)
+  `).all(startDate, endDate);
+  return rows.map(r => ({
+    date: r.day,
+    score: Math.round((r.count + (r.total_sw / 1000 / 60 / 30) + (r.must_count * 1.5)) * 10) / 10,
+    count: r.count,
+  }));
+}
+
+function getEffortStats() {
+  const today = localDateYmd();
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  const yesterday = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+  const d7 = new Date();
+  d7.setDate(d7.getDate() - 7);
+  const weekAgo = `${d7.getFullYear()}-${String(d7.getMonth() + 1).padStart(2, '0')}-${String(d7.getDate()).padStart(2, '0')}`;
+
+  const todayStats = getEffortForDate(today);
+  const yesterdayStats = getEffortForDate(yesterday);
+  const weekData = getEffortRange(weekAgo, yesterday);
+  const weekAvg = weekData.length > 0
+    ? Math.round((weekData.reduce((s, d) => s + d.score, 0) / 7) * 10) / 10
+    : 0;
+
+  let vsYesterday = null;
+  if (yesterdayStats.score > 0) {
+    vsYesterday = Math.round(((todayStats.score - yesterdayStats.score) / yesterdayStats.score) * 100);
+  }
+
+  let vsWeekAvg = null;
+  if (weekAvg > 0) {
+    vsWeekAvg = Math.round(((todayStats.score - weekAvg) / weekAvg) * 100);
+  }
+
+  return {
+    today: todayStats,
+    yesterday: yesterdayStats,
+    weekAvg,
+    vsYesterday,
+    vsWeekAvg,
+  };
+}
+
 function close() {
   if (db) {
     db.close();
     db = null;
   }
+}
+
+// ── Work Sessions ──
+
+function getActiveWorkSession() {
+  return getDb().prepare('SELECT * FROM work_sessions WHERE ended_at IS NULL ORDER BY id DESC LIMIT 1').get() || null;
+}
+
+function startWorkSession() {
+  const now = new Date();
+  const date = localDateYmd();
+  const started_at = now.toISOString();
+  const info = getDb().prepare('INSERT INTO work_sessions (date, started_at) VALUES (?, ?)').run(date, started_at);
+  return getDb().prepare('SELECT * FROM work_sessions WHERE id = ?').get(info.lastInsertRowid);
+}
+
+function stopWorkSession(id) {
+  const session = getDb().prepare('SELECT * FROM work_sessions WHERE id = ?').get(id);
+  if (!session || session.ended_at) return session;
+  const now = new Date();
+  const elapsed = Math.round((now.getTime() - new Date(session.started_at).getTime()) / 1000);
+  getDb().prepare('UPDATE work_sessions SET ended_at = ?, elapsed = ? WHERE id = ?').run(now.toISOString(), elapsed, id);
+  return getDb().prepare('SELECT * FROM work_sessions WHERE id = ?').get(id);
+}
+
+function getWorkSessionsByDate(date) {
+  return getDb().prepare('SELECT * FROM work_sessions WHERE date = ? ORDER BY started_at ASC').all(date);
+}
+
+function getWorkTotalByDate(date) {
+  const active = getDb().prepare('SELECT * FROM work_sessions WHERE date = ? AND ended_at IS NULL').get(date);
+  const closedRow = getDb().prepare('SELECT COALESCE(SUM(elapsed), 0) as total FROM work_sessions WHERE date = ? AND ended_at IS NOT NULL').get(date);
+  let total = closedRow.total;
+  if (active) {
+    total += Math.round((Date.now() - new Date(active.started_at).getTime()) / 1000);
+  }
+  return total;
+}
+
+function getWorkTotalByMonth(year, month) {
+  const start = `${year}-${String(month).padStart(2, '0')}-01`;
+  const lastDay = new Date(year, month, 0).getDate();
+  const end = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+  return getDb().prepare(`
+    SELECT date, SUM(elapsed) as total
+    FROM work_sessions
+    WHERE date >= ? AND date <= ? AND ended_at IS NOT NULL
+    GROUP BY date
+  `).all(start, end);
 }
 
 module.exports = {
@@ -512,5 +683,28 @@ module.exports = {
   updateTask,
   deleteTask,
   getCompletedTasksByMonth,
+  getSchedulesByDate,
+  getSchedulesByMonth,
+  createSchedule,
+  updateSchedule,
+  deleteSchedule,
+  getSectionsByProject,
+  createSection,
+  updateSection,
+  deleteSection,
+  getItemsBySection,
+  getAllItemsByProject,
+  createItem,
+  updateItem,
+  deleteItem,
+  getEffortForDate,
+  getEffortRange,
+  getEffortStats,
+  getActiveWorkSession,
+  startWorkSession,
+  stopWorkSession,
+  getWorkSessionsByDate,
+  getWorkTotalByDate,
+  getWorkTotalByMonth,
   close,
 };

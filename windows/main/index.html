@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="ko">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>FUARA</title>
   <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
   <div class="layout">
     <!-- Sidebar -->
@@ -15,11 +17,11 @@
         <button class="btn-icon" id="btn-add-project" title="프로젝트 추가">+</button>
       </div>
       <div class="sidebar-section">
-        <button class="sidebar-item active" data-view="today">
-          <span class="sidebar-icon">&#9788;</span> 오늘
+        <button class="sidebar-item active" data-view="todo">
+          <span class="sidebar-icon">&#9776;</span> To-Do
         </button>
-        <button class="sidebar-item" data-view="all">
-          <span class="sidebar-icon">&#9776;</span> 전체
+        <button class="sidebar-item" data-view="schedule">
+          <span class="sidebar-icon">&#128339;</span> 스케줄
         </button>
         <button class="sidebar-item" data-view="calendar">
           <span class="sidebar-icon">&#9635;</span> 캘린더
@@ -40,7 +42,7 @@
       <header class="content-header">
         <div class="header-title-row">
           <button class="header-date-btn" id="btn-date-prev" title="이전 날짜/월">&#9664;</button>
-          <h2 id="view-title">오늘 할 일</h2>
+          <h2 id="view-title">To-Do</h2>
           <button class="header-date-btn" id="btn-date-next" title="다음 날짜/월">&#9654;</button>
         </div>
         <div class="header-actions">
@@ -48,10 +50,17 @@
         </div>
       </header>
 
+      <!-- Sub-tab bar for To-Do view -->
+      <div class="sub-tab-bar" id="sub-tab-bar">
+        <button class="sub-tab active" data-subtab="today">오늘</button>
+        <button class="sub-tab" data-subtab="all">전체</button>
+      </div>
+
       <div class="in-progress-section hidden" id="in-progress-section"></div>
       <div class="task-list" id="task-list"></div>
       <div class="calendar-view hidden" id="calendar-view"></div>
       <div class="notes-view hidden" id="notes-view"></div>
+      <div class="schedule-view hidden" id="schedule-view"></div>
 
       <!-- Add task bar -->
       <div class="add-task-bar">
@@ -63,6 +72,33 @@
         </select>
         <input type="number" id="new-task-estimate" placeholder="분" class="estimate-input" min="0" />
         <button class="btn-add-task" id="btn-add-task">추가</button>
+      </div>
+
+      <!-- Add schedule bar -->
+      <div class="add-schedule-bar hidden">
+        <div class="add-schedule-row">
+          <input type="text" id="new-schedule-title" placeholder="스케줄 추가..." class="task-input" />
+          <input type="date" id="new-schedule-date" class="date-picker" />
+          <input type="text" id="new-schedule-start" class="time-input-custom" placeholder="00:00" maxlength="5" />
+          <span class="time-separator">~</span>
+          <input type="text" id="new-schedule-end" class="time-input-custom" placeholder="00:00" maxlength="5" />
+          <select id="new-schedule-recurrence" class="priority-select">
+            <option value="none">반복 안 함</option>
+            <option value="daily">매일</option>
+            <option value="weekly">매주</option>
+          </select>
+          <button class="btn-add-task" id="btn-add-schedule">추가</button>
+        </div>
+        <div class="recurrence-days-row hidden" id="recurrence-days-row">
+          <span class="recurrence-days-label">반복 요일:</span>
+          <button class="day-btn" data-day="0">일</button>
+          <button class="day-btn" data-day="1">월</button>
+          <button class="day-btn" data-day="2">화</button>
+          <button class="day-btn" data-day="3">수</button>
+          <button class="day-btn" data-day="4">목</button>
+          <button class="day-btn" data-day="5">금</button>
+          <button class="day-btn" data-day="6">토</button>
+        </div>
       </div>
 
       <!-- Status bar -->
@@ -88,4 +124,5 @@
 
   <script src="renderer.bundle.js"></script>
 </body>
+
 </html>
