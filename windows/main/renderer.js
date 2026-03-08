@@ -4,6 +4,7 @@ import Underline from '@tiptap/extension-underline';
 import Highlight from '@tiptap/extension-highlight';
 import Color from '@tiptap/extension-color';
 import { TextStyle } from '@tiptap/extension-text-style';
+import Image from '@tiptap/extension-image';
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -22,8 +23,12 @@ const NOTE_CATEGORIES = ['idea', 'memo', 'dev'];
 let selectedNoteId = null;
 let tiptapEditor = null;
 let noteOriginal = null; // { title, content, category, pinned }
+let characterEditorOriginal = null; // { itemId, title, content, tags }
 let activeProjectFilter = null; // { id, name } or null
 let liveTodayKey = todayYmd();
+let hubCharacterEditorState = null; // { sectionId, selectedItemId }
+let hubSectionEditorState = null; // { sectionId, selectedItemId }
+let richToolbarDismissBound = false;
 
 // ── Init ──
 
@@ -113,6 +118,8 @@ async function loadTasks() {
   calView.classList.add('hidden');
   notesView.classList.add('hidden');
   schedView.classList.add('hidden');
+  const hubView = $('#hub-view');
+  if (hubView) hubView.classList.add('hidden');
   addBar.classList.add('hidden');
   addSchedBar.classList.add('hidden');
   subTabBar.classList.add('hidden');
@@ -147,6 +154,16 @@ async function loadTasks() {
     renderFilterBadge();
     await renderSchedule(currentDate);
     renderEffortBanner('#schedule-view');
+    return;
+  }
+
+  if (currentView === 'hub') {
+    if (hubView) hubView.classList.remove('hidden');
+    headerActions.classList.add('hidden');
+    document.querySelector('.status-bar')?.classList.add('hidden');
+    $('#view-title').textContent = 'Hub';
+    renderFilterBadge();
+    await renderHubView();
     return;
   }
 
@@ -224,7 +241,11 @@ async function renderNotesWithSections(preferredNoteId) {
     `<button class="section-tab ${activeNotesTab === 'notes' ? 'active' : ''}" data-notes-tab="notes">&#128221; 노트 ${notesCount > 0 ? `<span class="section-tab-badge">${notesCount}</span>` : ''}</button>`,
     ...sections.map(sec => {
       const isActive = activeNotesTab === sec.id;
-      const icon = sec.section_type === 'reference_doc' ? '&#128196;' : '&#128172;';
+      const icon = sec.section_type === 'reference_doc'
+        ? '&#128196;'
+        : sec.section_type === 'character_bible'
+          ? '&#127917;'
+          : '&#128172;';
       const badge = sec._itemCount > 0 ? `<span class="section-tab-badge">${sec._itemCount}</span>` : '';
       return `<button class="section-tab ${isActive ? 'active' : ''}" data-notes-tab="${sec.id}">${icon} ${escHtml(sec.title)} ${badge}</button>`;
     }),
@@ -290,16 +311,16 @@ function renderDialogueLibrarySection(section, items) {
   const allTags = new Set();
   items.forEach(item => {
     if (item.tags) {
-      try { JSON.parse(item.tags).forEach(t => allTags.add(t)); } catch (_) {}
+      try { JSON.parse(item.tags).forEach(t => allTags.add(t)); } catch (_) { }
     }
   });
 
   const tagList = [...allTags].sort();
   const filtered = activeSectionTagFilter
     ? items.filter(item => {
-        if (!item.tags) return false;
-        try { return JSON.parse(item.tags).includes(activeSectionTagFilter); } catch (_) { return false; }
-      })
+      if (!item.tags) return false;
+      try { return JSON.parse(item.tags).includes(activeSectionTagFilter); } catch (_) { return false; }
+    })
     : items;
 
   const tagsHtml = tagList.length > 0 ? `
@@ -439,6 +460,7 @@ function showAddSectionModal(projectId) {
       <h3>커스텀 섹션 추가</h3>
       <input type="text" class="modal-input" id="section-title-input" placeholder="섹션 제목" />
       <select class="modal-input" id="section-type-input">
+        <option value="character_bible">캐릭터 설정</option>
         <option value="dialogue_library">대사/아이템 라이브러리</option>
         <option value="reference_doc">참고 문서</option>
         <option value="checklist">체크리스트</option>
@@ -451,11 +473,18 @@ function showAddSectionModal(projectId) {
   `;
   document.body.appendChild(overlay);
 
+  const titleInput = overlay.querySelector('#section-title-input');
+  const typeInput = overlay.querySelector('#section-type-input');
   overlay.querySelector('#section-title-input').focus();
   overlay.querySelector('#btn-section-cancel').addEventListener('click', () => overlay.remove());
+  typeInput.addEventListener('change', () => {
+    if (typeInput.value === 'character_bible' && !titleInput.value.trim()) {
+      titleInput.value = '캐릭터 설정';
+    }
+  });
   overlay.querySelector('#btn-section-confirm').addEventListener('click', async () => {
-    const title = overlay.querySelector('#section-title-input').value.trim();
-    const sectionType = overlay.querySelector('#section-type-input').value;
+    const title = titleInput.value.trim();
+    const sectionType = typeInput.value;
     if (!title) return;
     await window.orbit.createSection({ project_id: projectId, section_type: sectionType, title });
     overlay.remove();
@@ -538,7 +567,8 @@ function showEditItemModal(item, projectId) {
     const tags = tagsRaw ? JSON.stringify(tagsRaw.split(',').map(t => t.trim()).filter(Boolean)) : null;
     await window.orbit.updateItem(item.id, { title: title || null, content: content || null, tags });
     overlay.remove();
-    await renderProjectSections(projectId);
+    if (currentView === 'hub') await renderHubView();
+    else await renderProjectSections(projectId);
   });
   overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
 }
@@ -888,6 +918,8 @@ async function renderNotesInto(container, preferredId) {
           <button class="tb-btn" data-cmd="bulletList" title="목록">•</button>
           <button class="tb-btn" data-cmd="orderedList" title="번호 목록">1.</button>
           <button class="tb-btn" data-cmd="horizontalRule" title="구분선">―</button>
+          <span class="tb-sep"></span>
+          <button class="tb-btn tb-preview-btn" data-cmd="preview" title="미리보기">👁 미리보기</button>
         </div>
         <div id="note-editor-tiptap" class="note-editor-tiptap"></div>
         <div class="notes-right-actions">
@@ -925,11 +957,25 @@ function stripHtml(html) {
   return tmp.textContent || '';
 }
 
-function initTiptapEditor(content) {
+function initTiptapEditor(content, options = {}) {
   if (tiptapEditor) { tiptapEditor.destroy(); tiptapEditor = null; }
 
-  const el = $('#note-editor-tiptap');
+  const {
+    elementSelector = '#note-editor-tiptap',
+    onUpdate = updateNoteDirty,
+  } = options;
+
+  const el = $(elementSelector);
   if (!el) return;
+
+  const ResizableImage = Image.extend({
+    addAttributes() {
+      return {
+        ...this.parent?.(),
+        width: { default: null, renderHTML: (attrs) => attrs.width ? { width: attrs.width } : {} },
+      };
+    },
+  });
 
   tiptapEditor = new Editor({
     element: el,
@@ -939,14 +985,133 @@ function initTiptapEditor(content) {
       Highlight.configure({ multicolor: true }),
       TextStyle,
       Color,
+      ResizableImage.configure({ inline: false, allowBase64: false }),
     ],
     content: content || '<p></p>',
-    onUpdate: () => updateNoteDirty(),
+    onUpdate: () => onUpdate(),
+  });
+
+  // ── Image drop / paste handler ──
+  async function saveAndInsert(file) {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const base64 = reader.result.split(',')[1];
+      const ext = file.name ? file.name.split('.').pop() : (file.type === 'image/png' ? 'png' : 'jpg');
+      const filePath = await window.orbit.saveImage({ base64, ext });
+      if (filePath && tiptapEditor) {
+        tiptapEditor.chain().focus().setImage({ src: `file:///${filePath.replace(/\\/g, '/')}` }).run();
+      }
+    };
+    reader.readAsDataURL(file);
+  }
+
+  el.addEventListener('drop', (e) => {
+    const files = e.dataTransfer?.files;
+    if (!files?.length) return;
+    const imageFiles = [...files].filter(f => f.type.startsWith('image/'));
+    if (!imageFiles.length) return;
+    e.preventDefault();
+    e.stopPropagation();
+    imageFiles.forEach(saveAndInsert);
+  });
+
+  el.addEventListener('paste', (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) saveAndInsert(file);
+        return;
+      }
+    }
+  });
+
+  // ── Image resize (overlay approach) ──
+  const overlay = document.createElement('div');
+  overlay.className = 'tiptap-resize-overlay';
+  overlay.innerHTML = '<div class="tiptap-resize-handle"></div>';
+  overlay.style.display = 'none';
+  el.style.position = 'relative';
+  el.appendChild(overlay);
+
+  let resizeTarget = null;
+
+  function showOverlay(img) {
+    resizeTarget = img;
+    const elRect = el.getBoundingClientRect();
+    const imgRect = img.getBoundingClientRect();
+    overlay.style.display = 'block';
+    overlay.style.left = (imgRect.left - elRect.left + el.scrollLeft) + 'px';
+    overlay.style.top = (imgRect.top - elRect.top + el.scrollTop) + 'px';
+    overlay.style.width = imgRect.width + 'px';
+    overlay.style.height = imgRect.height + 'px';
+  }
+
+  function hideOverlay() {
+    resizeTarget = null;
+    overlay.style.display = 'none';
+  }
+
+  el.addEventListener('click', (e) => {
+    const img = e.target.closest('.ProseMirror img');
+    if (img) {
+      showOverlay(img);
+    } else if (!e.target.closest('.tiptap-resize-overlay')) {
+      hideOverlay();
+    }
+  });
+
+  overlay.querySelector('.tiptap-resize-handle').addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!resizeTarget) return;
+    const img = resizeTarget;
+    const startX = e.clientX;
+    const startWidth = img.getBoundingClientRect().width;
+
+    const onMove = (ev) => {
+      const newWidth = Math.max(50, startWidth + (ev.clientX - startX));
+      img.style.width = newWidth + 'px';
+      img.removeAttribute('height');
+      // Update overlay position
+      const elRect = el.getBoundingClientRect();
+      const imgRect = img.getBoundingClientRect();
+      overlay.style.width = imgRect.width + 'px';
+      overlay.style.height = imgRect.height + 'px';
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      // Save width to tiptap node
+      if (tiptapEditor && img) {
+        const { doc } = tiptapEditor.state;
+        let found = false;
+        doc.descendants((node, pos) => {
+          if (found) return false;
+          if (node.type.name === 'image' && node.attrs.src === img.getAttribute('src')) {
+            tiptapEditor.chain().focus().setNodeSelection(pos).updateAttributes('image', { width: img.style.width }).run();
+            found = true;
+            return false;
+          }
+        });
+      }
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
   });
 }
 
-function bindNoteToolbar() {
-  const toolbar = $('#note-toolbar');
+function bindNoteToolbar(options = {}) {
+  const {
+    toolbarSelector = '#note-toolbar',
+    highlightPaletteSelector = '#palette-hl',
+    colorPaletteSelector = '#palette-color',
+    colorIndicatorSelector = '#tb-color-ind',
+  } = options;
+
+  const toolbar = $(toolbarSelector);
   if (!toolbar) return;
 
   toolbar.addEventListener('click', (e) => {
@@ -970,13 +1135,24 @@ function bindNoteToolbar() {
       case 'bulletList': chain.toggleBulletList().run(); break;
       case 'orderedList': chain.toggleOrderedList().run(); break;
       case 'horizontalRule': chain.setHorizontalRule().run(); break;
+      case 'preview': {
+        const isPreview = !tiptapEditor.isEditable;
+        tiptapEditor.setEditable(isPreview);
+        btn.classList.toggle('tb-preview-active', !isPreview);
+        btn.textContent = isPreview ? '👁 미리보기' : '✏️ 편집';
+        // Hide/show formatting buttons
+        toolbar.querySelectorAll('.tb-btn:not([data-cmd="preview"]), .tb-sep, .tb-dropdown').forEach(el => {
+          el.style.display = isPreview ? '' : 'none';
+        });
+        return;
+      }
       case 'highlight-toggle':
-        $('#palette-hl')?.classList.toggle('hidden');
-        $('#palette-color')?.classList.add('hidden');
+        $(highlightPaletteSelector)?.classList.toggle('hidden');
+        $(colorPaletteSelector)?.classList.add('hidden');
         return;
       case 'color-toggle':
-        $('#palette-color')?.classList.toggle('hidden');
-        $('#palette-hl')?.classList.add('hidden');
+        $(colorPaletteSelector)?.classList.toggle('hidden');
+        $(highlightPaletteSelector)?.classList.add('hidden');
         return;
     }
   });
@@ -987,7 +1163,7 @@ function bindNoteToolbar() {
       const color = hlBtn.dataset.hl;
       if (color) tiptapEditor.chain().focus().toggleHighlight({ color }).run();
       else tiptapEditor.chain().focus().unsetHighlight().run();
-      $('#palette-hl')?.classList.add('hidden');
+      $(highlightPaletteSelector)?.classList.add('hidden');
       return;
     }
 
@@ -995,18 +1171,20 @@ function bindNoteToolbar() {
     if (colorBtn && tiptapEditor) {
       const color = colorBtn.dataset.color;
       tiptapEditor.chain().focus().setColor(color).run();
-      const ind = $('#tb-color-ind');
+      const ind = $(colorIndicatorSelector);
       if (ind) ind.style.background = color;
-      $('#palette-color')?.classList.add('hidden');
+      $(colorPaletteSelector)?.classList.add('hidden');
     }
   });
 
-  document.addEventListener('click', (e) => {
-    if (!e.target.closest('.tb-dropdown')) {
-      $('#palette-hl')?.classList.add('hidden');
-      $('#palette-color')?.classList.add('hidden');
-    }
-  });
+  if (!richToolbarDismissBound) {
+    richToolbarDismissBound = true;
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.tb-dropdown')) {
+        $$('.tb-palette').forEach((palette) => palette.classList.add('hidden'));
+      }
+    });
+  }
 }
 
 function isNoteDirty() {
@@ -1098,6 +1276,128 @@ async function deleteSelectedNote() {
   await window.orbit.deleteNote(selectedNoteId);
   selectedNoteId = null;
   await renderNotesWithSections();
+}
+
+function isCharacterEditorDirty() {
+  if (!characterEditorOriginal) return false;
+  const titleEl = $('#character-editor-title');
+  const tagsEl = $('#character-editor-tags');
+  if (!titleEl || !tagsEl) return false;
+
+  const currentContent = tiptapEditor ? tiptapEditor.getHTML() : '';
+  return (
+    titleEl.value !== characterEditorOriginal.title ||
+    currentContent !== (characterEditorOriginal.content || '') ||
+    tagsEl.value !== characterEditorOriginal.tags
+  );
+}
+
+function updateCharacterEditorDirty() {
+  const btn = $('#btn-character-save');
+  if (!btn) return;
+  const dirty = isCharacterEditorDirty();
+  btn.disabled = !dirty;
+  btn.classList.toggle('btn-note-save-disabled', !dirty);
+}
+
+function bindCharacterEditorDirtyEvents() {
+  const titleEl = $('#character-editor-title');
+  const tagsEl = $('#character-editor-tags');
+  if (!titleEl || !tagsEl) return;
+
+  titleEl.addEventListener('input', updateCharacterEditorDirty);
+  tagsEl.addEventListener('input', updateCharacterEditorDirty);
+}
+
+function getCharacterEditorData() {
+  const titleEl = $('#character-editor-title');
+  const tagsEl = $('#character-editor-tags');
+  if (!titleEl || !tagsEl) return null;
+
+  const title = titleEl.value.trim();
+  if (!title) {
+    titleEl.focus();
+    return null;
+  }
+
+  const content = tiptapEditor ? tiptapEditor.getHTML() : null;
+  const tagsRaw = tagsEl.value.trim();
+  const tags = tagsRaw ? JSON.stringify(tagsRaw.split(',').map(tag => tag.trim()).filter(Boolean)) : null;
+  return {
+    title,
+    content: content || null,
+    tags,
+  };
+}
+
+function destroySharedEditor() {
+  if (tiptapEditor) {
+    tiptapEditor.destroy();
+    tiptapEditor = null;
+  }
+}
+
+async function saveCharacterEditor() {
+  if (!hubCharacterEditorState?.selectedItemId) return;
+  if (!isCharacterEditorDirty()) return;
+  const fields = getCharacterEditorData();
+  if (!fields) return;
+  await window.orbit.updateItem(hubCharacterEditorState.selectedItemId, fields);
+  await renderHubView();
+}
+
+async function closeCharacterEditor() {
+  hubCharacterEditorState = null;
+  characterEditorOriginal = null;
+  destroySharedEditor();
+  await renderHubView();
+}
+
+async function maybeCloseCharacterEditor() {
+  if (!hubCharacterEditorState) return;
+  if (!isCharacterEditorDirty()) {
+    await closeCharacterEditor();
+    return;
+  }
+  const ok = await showConfirmDialog('저장하지 않은 캐릭터 설정 변경사항이 있습니다.\n정말 나갈까요?');
+  if (!ok) return;
+  await closeCharacterEditor();
+}
+
+async function openCharacterEditor(sectionId, itemId = null) {
+  hubCharacterEditorState = {
+    sectionId: Number(sectionId),
+    selectedItemId: itemId ? Number(itemId) : null,
+  };
+  characterEditorOriginal = null;
+  destroySharedEditor();
+  await renderHubView();
+}
+
+async function openSectionEditor(sectionId, itemId = null) {
+  hubSectionEditorState = {
+    sectionId: Number(sectionId),
+    selectedItemId: itemId ? Number(itemId) : null,
+  };
+  characterEditorOriginal = null;
+  destroySharedEditor();
+  await renderHubView();
+}
+
+async function selectCharacterEditorItem(itemId) {
+  const nextId = Number(itemId);
+  if (!hubCharacterEditorState || !nextId || hubCharacterEditorState.selectedItemId === nextId) return;
+  if (isCharacterEditorDirty()) {
+    const ok = await showConfirmDialog('현재 항목의 저장하지 않은 변경사항이 있습니다.\n저장하지 않고 다른 항목으로 이동할까요?');
+    if (!ok) return;
+  }
+  hubCharacterEditorState = {
+    ...hubCharacterEditorState,
+    selectedItemId: nextId,
+  };
+  characterEditorOriginal = null;
+  destroySharedEditor();
+  await renderHubView();
 }
 
 function noteCategoryOptions(selected) {
@@ -1243,6 +1543,20 @@ function bindEvents() {
     // Sidebar nav
     const sideItem = e.target.closest('.sidebar-item[data-view]');
     if (sideItem) {
+      if (currentView === 'hub' && hubCharacterEditorState) {
+        const view = sideItem.dataset.view;
+        const isSameHub = view === 'hub';
+        if (!isSameHub) {
+          if (isCharacterEditorDirty()) {
+            const ok = await showConfirmDialog('저장하지 않은 캐릭터 설정 변경사항이 있습니다.\n페이지를 떠날까요?');
+            if (!ok) return;
+          }
+          hubCharacterEditorState = null;
+          characterEditorOriginal = null;
+          destroySharedEditor();
+        }
+      }
+
       const view = sideItem.dataset.view;
 
       // Project click = filter toggle (keep current view)
@@ -1275,6 +1589,8 @@ function bindEvents() {
         currentView = 'calendar';
       } else if (view === 'notes') {
         currentView = 'notes';
+      } else if (view === 'hub') {
+        currentView = 'hub';
       } else {
         currentView = 'today';
       }
@@ -1368,26 +1684,44 @@ function bindEvents() {
     }
 
     const noteListItem = e.target.closest('.note-list-item');
-    if (noteListItem) {
+    if (currentView === 'notes' && noteListItem) {
       selectedNoteId = Number(noteListItem.dataset.id);
       await renderNotesWithSections(selectedNoteId);
       return;
     }
 
     const noteNewBtn = e.target.closest('#btn-note-new');
-    if (noteNewBtn) {
+    if (currentView === 'notes' && noteNewBtn) {
       await createNoteAndSelect();
       return;
     }
 
     const noteSaveBtn = e.target.closest('#btn-note-save');
-    if (noteSaveBtn) {
+    if (currentView === 'notes' && noteSaveBtn) {
       await saveSelectedNote();
       return;
     }
 
+    const characterSaveBtn = e.target.closest('#btn-character-save');
+    if (characterSaveBtn) {
+      await saveCharacterEditor();
+      return;
+    }
+
+    const characterCloseBtn = e.target.closest('[data-character-editor-close]');
+    if (characterCloseBtn) {
+      await maybeCloseCharacterEditor();
+      return;
+    }
+
+    const characterSelectBtn = e.target.closest('[data-character-editor-select]');
+    if (characterSelectBtn) {
+      await selectCharacterEditorItem(characterSelectBtn.dataset.characterEditorSelect);
+      return;
+    }
+
     const noteDeleteBtn = e.target.closest('#btn-note-delete');
-    if (noteDeleteBtn) {
+    if (currentView === 'notes' && noteDeleteBtn) {
       await deleteSelectedNote();
       return;
     }
@@ -1395,6 +1729,19 @@ function bindEvents() {
 
   // Subtask input (Enter to add)
   document.addEventListener('keydown', async (e) => {
+    if (currentView === 'hub' && hubCharacterEditorState && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      await saveCharacterEditor();
+      return;
+    }
+
+    if (currentView === 'hub' && hubSectionEditorState && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      const saveBtn = $('#btn-section-save');
+      if (saveBtn && !saveBtn.disabled) saveBtn.click();
+      return;
+    }
+
     if (currentView === 'notes' && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
       e.preventDefault();
       await saveSelectedNote();
@@ -1744,6 +2091,1132 @@ async function addSchedule() {
   await renderSchedule(currentDate);
 }
 
+
+let hubActiveTab = 'overview';
+let hubDoneLaneOpen = false;
+const hubExpandedSections = new Set();
+const hubExpandedCharacterBibleItems = new Set();
+
+async function renderHubView() {
+  const container = $('#hub-view');
+  if (!container) return;
+  if (!activeProjectFilter) {
+    container.innerHTML = '<div class="hub-shell"><div class="hub-empty-card"><div class="hub-empty-title">프로젝트를 선택해주세요</div><div class="hub-empty-sub">사이드바에서 프로젝트를 선택하면<br>허브 대시보드가 표시됩니다.</div></div></div>';
+    return;
+  }
+
+  const pid = activeProjectFilter.id;
+  const hubData = window.orbit.getProjectHub ? await window.orbit.getProjectHub(pid) : null;
+  const proj = hubData?.project || (await window.orbit.getProjects()).find(p => p.id === pid);
+  const allTasks = Array.isArray(hubData?.tasks) ? hubData.tasks : await window.orbit.getTasksByProject(pid);
+  const notes = Array.isArray(hubData?.notes) ? hubData.notes : ((await window.orbit.getNotes(pid)) || []);
+  let sections = Array.isArray(hubData?.sections) ? hubData.sections : ((await window.orbit.getSections(pid)) || []);
+  if (!hubData) {
+    sections = await Promise.all(sections.map(async (section) => ({
+      ...section,
+      items: (await window.orbit.getItems(section.id)) || [],
+    })));
+  } else {
+    sections = sections.map(section => ({
+      ...section,
+      items: Array.isArray(section.items) ? section.items : [],
+    }));
+  }
+
+  const pending = allTasks.filter(t => t.status === 'pending');
+  const inProgress = allTasks.filter(t => t.status === 'in_progress');
+  const done = allTasks.filter(t => t.status === 'done');
+  const mustTasks = allTasks.filter(t => t.priority === 'must' && t.status !== 'done');
+  const todayYmd = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+  const todayStr = todayYmd();
+  const todayTasks = allTasks.filter(t => t.target_date === todayStr && t.status !== 'done');
+  const backlogTasks = pending.filter(t => !t.target_date);
+  const totalEst = allTasks.reduce((s, t) => s + (t.estimate_minutes || 0), 0);
+  const doneEst = done.reduce((s, t) => s + (t.estimate_minutes || 0), 0);
+  let flatAll = [];
+  allTasks.forEach(t => {
+    flatAll.push(t);
+    if (t.subtasks) t.subtasks.forEach(s => flatAll.push(s));
+  });
+  const progress = flatAll.length > 0 ? Math.round(flatAll.filter(t => t.status === 'done').length / flatAll.length * 100) : 0;
+
+  function escHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function parseJsonSafe(value, fallback = {}) {
+    if (!value) return fallback;
+    try { return JSON.parse(value); } catch (_) { return fallback; }
+  }
+  function priorityLabel(p) { return ({ must: '필수', should: '높음', normal: '보통', could: '보통', low: '낮음' })[p] || '보통'; }
+  function priorityRank(p) { return ({ must: 0, should: 1, normal: 2, could: 2, low: 3 })[p] ?? 9; }
+  function stageLabel(stage) { return ({ implemented: '구현됨', in_progress: '진행 중', next_up: '다음', idea: '아이디어' })[stage] || '기타'; }
+  function stageRank(stage) { return ({ in_progress: 0, next_up: 1, implemented: 2, idea: 3 })[stage] ?? 9; }
+  function inferStageFromSectionType(sectionType) {
+    if (sectionType === 'current_status') return 'implemented';
+    if (sectionType === 'roadmap') return 'next_up';
+    if (sectionType === 'idea_backlog') return 'idea';
+    return null;
+  }
+  function parseTags(rawTags) {
+    if (!rawTags) return [];
+    try {
+      const parsed = JSON.parse(rawTags);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (_) {
+      return [];
+    }
+  }
+  function toPlainText(value) {
+    return String(value || '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\r/g, '')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim();
+  }
+  function previewText(value, maxLength = 140) {
+    const text = toPlainText(value).replace(/\n+/g, ' ').trim();
+    if (!text) return '';
+    if (text.length <= maxLength) return text;
+    return `${text.slice(0, maxLength).trim()}...`;
+  }
+  function previewLines(value, maxLines = 4, maxLineLength = 76) {
+    const normalized = toPlainText(value);
+    if (!normalized) return [];
+    const raw = normalized.split('\n').flatMap((line) => {
+      const chunks = line.match(new RegExp(`.{1,${maxLineLength}}(?:\\s|$)`, 'g'));
+      return chunks || [];
+    });
+    return raw.map(line => line.trim()).filter(Boolean).slice(0, maxLines);
+  }
+  function getItemMeta(item) {
+    return item?.hub_meta || parseJsonSafe(item?.metadata, {});
+  }
+  function getItemStage(item, sectionType) {
+    return item?.hub_stage || getItemMeta(item).stage || inferStageFromSectionType(sectionType);
+  }
+  function getSectionIcon(sectionType) {
+    return ({
+      overview_doc: '🧭',
+      character_bible: '🎭',
+      current_status: '🧩',
+      roadmap: '🚀',
+      idea_backlog: '💡',
+      worklog: '📝',
+      reference_doc: '📄',
+    })[sectionType] || '💬';
+  }
+  function getSectionSubtitle(sectionType) {
+    return ({
+      overview_doc: '프로젝트의 현재 방향과 기준을 한눈에 봅니다.',
+      character_bible: '캐릭터의 정체성, 말투, 금지선, LLM 가드레일을 한눈에 봅니다.',
+      current_status: '이미 들어간 기능과 안정화 상태를 빠르게 확인합니다.',
+      roadmap: '다음으로 붙여야 할 핵심 개발 항목을 압축해서 봅니다.',
+      idea_backlog: '지금은 아니지만 살려둘 후보 아이디어를 모아둡니다.',
+      worklog: '최근 작업 기록과 작업량 메모를 바로 확인합니다.',
+      reference_doc: '참고 문서를 짧게 미리 봅니다.',
+    })[sectionType] || '섹션의 핵심 내용을 미리 봅니다.';
+  }
+  function uniqueById(items) {
+    const seen = new Set();
+    return items.filter((item) => {
+      const key = String(item?.id ?? item?.title ?? '');
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+  function sortSectionItems(section) {
+    const items = [...(Array.isArray(section?.items) ? section.items : [])];
+    return items.sort((a, b) => {
+      const metaA = getItemMeta(a);
+      const metaB = getItemMeta(b);
+      if (section.section_type === 'worklog') {
+        const dateDiff = String(metaB.work_date || '').localeCompare(String(metaA.work_date || ''));
+        if (dateDiff !== 0) return dateDiff;
+      }
+      if (section.section_type === 'roadmap') {
+        const stageDiff = stageRank(getItemStage(a, section.section_type)) - stageRank(getItemStage(b, section.section_type));
+        if (stageDiff !== 0) return stageDiff;
+        const priorityDiff = priorityRank(metaA.priority) - priorityRank(metaB.priority);
+        if (priorityDiff !== 0) return priorityDiff;
+      }
+      if (section.section_type === 'current_status') {
+        const statusRank = { in_progress: 0, implemented: 1, next_up: 2, idea: 3 };
+        const stageDiff = (statusRank[getItemStage(a, section.section_type)] ?? 9) - (statusRank[getItemStage(b, section.section_type)] ?? 9);
+        if (stageDiff !== 0) return stageDiff;
+      }
+      if (section.section_type === 'idea_backlog') {
+        const priorityDiff = priorityRank(metaA.priority) - priorityRank(metaB.priority);
+        if (priorityDiff !== 0) return priorityDiff;
+      }
+      const sortDiff = Number(a.sort_order || 0) - Number(b.sort_order || 0);
+      if (sortDiff !== 0) return sortDiff;
+      return String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || ''));
+    });
+  }
+  function getCharacterBibleItemKey(sectionId, itemId) {
+    return `${sectionId}:${itemId}`;
+  }
+  function renderCharacterBiblePreview(section, items) {
+    const previewItems = items.slice(0, 4);
+    const extraCount = Math.max(0, items.length - previewItems.length);
+    return `
+      <div class="hub-character-preview-grid">
+        ${previewItems.length > 0
+        ? previewItems.map(item => {
+          const tags = parseTags(item.tags);
+          const summary = previewText(item.content || '', 64);
+          return `
+                <div class="hub-character-preview-card">
+                  <div class="hub-character-preview-head">
+                    <div class="hub-character-preview-title">${escHtml(item.title || '(제목 없음)')}</div>
+                    <div class="hub-character-preview-chips">
+                      ${tags.slice(0, 2).map(tag => `<span class="hub-chip-sm">${escHtml(tag)}</span>`).join('')}
+                    </div>
+                  </div>
+                  ${summary ? `<div class="hub-character-preview-copy">${escHtml(summary)}</div>` : ''}
+                </div>
+              `;
+        }).join('')
+        : '<div class="hub-major-empty">아직 들어간 내용이 없습니다.</div>'}
+        ${extraCount > 0 ? `<div class="hub-character-preview-more">외 ${extraCount}개 항목은 펼치면 전체를 볼 수 있습니다.</div>` : ''}
+      </div>
+    `;
+  }
+  function renderCharacterBibleAccordion(section, items) {
+    if (!items.length) {
+      return '<div class="hub-lane-empty">아직 들어간 내용이 없습니다.</div>';
+    }
+    return `
+      <div class="hub-character-accordion">
+        ${items.map(item => {
+      const tags = parseTags(item.tags);
+      const meta = getItemMeta(item);
+      const itemKey = getCharacterBibleItemKey(section.id, item.id);
+      const isOpen = hubExpandedCharacterBibleItems.has(itemKey);
+      const summary = previewText(item.content || '', 120);
+      const body = toPlainText(item.content || '');
+      const chips = [];
+      if (meta.layout) chips.push(`<span class="hub-chip-sm">${escHtml(meta.layout)}</span>`);
+      if (meta.locked) chips.push('<span class="hub-chip-sm">locked</span>');
+      tags.slice(0, 2).forEach(tag => chips.push(`<span class="hub-chip-sm">${escHtml(tag)}</span>`));
+      return `
+            <article class="hub-character-entry ${isOpen ? 'is-open' : ''}">
+              <div class="hub-character-entry-head">
+                <div class="hub-character-entry-main">
+                  <button class="hub-character-entry-toggle" type="button" data-character-item-toggle="${itemKey}">
+                    <div class="hub-character-entry-title">${escHtml(item.title || '(제목 없음)')}</div>
+                    ${summary ? `<div class="hub-character-entry-summary">${escHtml(summary)}</div>` : ''}
+                  </button>
+                </div>
+                <div class="hub-character-entry-meta">
+                  <div class="hub-character-entry-chips">${chips.join('')}</div>
+                  <button class="hub-character-entry-edit" type="button" data-character-item-edit="${item.id}" data-character-section-id="${section.id}" title="큰 화면에서 이 항목 수정">수정</button>
+                  <button class="hub-character-entry-arrow" type="button" data-character-item-toggle="${itemKey}" aria-label="항목 펼치기/접기">${isOpen ? '▼' : '▶'}</button>
+                </div>
+              </div>
+              ${isOpen ? `
+                <div class="hub-character-entry-body">
+                  <div class="hub-character-entry-body-copy">${escHtml(body).replace(/\n/g, '<br>')}</div>
+                </div>
+              ` : ''}
+            </article>
+          `;
+    }).join('')}
+      </div>
+    `;
+  }
+  function renderCharacterBibleEditorPage(section) {
+    const items = sortSectionItems(section);
+    if (!items.length) {
+      return `
+        <section class="hub-section hub-character-editor-page">
+          <div class="hub-section-head">
+            <div>
+              <div class="hub-section-title">캐릭터 설정 편집기</div>
+              <div class="hub-section-sub">아직 편집할 항목이 없습니다.</div>
+            </div>
+            <button class="hub-card-link" data-character-editor-close type="button">Hub로 돌아가기</button>
+          </div>
+          <div class="hub-lane-empty">캐릭터 설정 템플릿이 비어 있습니다.</div>
+        </section>
+      `;
+    }
+
+    let selectedItem = items.find(item => item.id === hubCharacterEditorState?.selectedItemId) || items[0];
+    if (hubCharacterEditorState) hubCharacterEditorState.selectedItemId = selectedItem.id;
+
+    const selectedMeta = getItemMeta(selectedItem);
+    const selectedTags = parseTags(selectedItem.tags);
+    const metaChips = [];
+    if (selectedMeta.layout) metaChips.push(`<span class="hub-chip-sm">${escHtml(selectedMeta.layout)}</span>`);
+    if (selectedMeta.locked) metaChips.push('<span class="hub-chip-sm">template</span>');
+    selectedTags.forEach(tag => metaChips.push(`<span class="hub-chip-sm">${escHtml(tag)}</span>`));
+
+    return `
+      <section class="hub-section hub-character-editor-page">
+        <div class="hub-section-head">
+          <div>
+            <div class="hub-section-title">캐릭터 설정 편집기</div>
+            <div class="hub-section-sub">작은 팝업 대신 노트처럼 큰 화면에서 항목별로 이동하며 편집합니다.</div>
+          </div>
+          <button class="hub-card-link" data-character-editor-close type="button">Hub로 돌아가기</button>
+        </div>
+        <div class="notes-shell hub-character-editor-shell">
+          <aside class="notes-left hub-character-editor-left">
+            <div class="notes-left-header">
+              <span>${escHtml(section.title)} · ${items.length}개</span>
+            </div>
+            <div class="notes-listbook">
+              ${items.map(item => {
+      const isActive = item.id === selectedItem.id;
+      const itemTags = parseTags(item.tags);
+      const itemMeta = getItemMeta(item);
+      const preview = previewText(item.content || '', 90);
+      const subMeta = [];
+      if (itemMeta.layout) subMeta.push(itemMeta.layout);
+      if (itemTags.length > 0) subMeta.push(itemTags.slice(0, 2).join(', '));
+      return `
+                  <button class="note-list-item character-note-list-item ${isActive ? 'active' : ''}" data-character-editor-select="${item.id}" type="button" title="${escHtml(item.title || '제목 없음')}">
+                    <div class="note-list-top">
+                      <span class="note-list-title">${escHtml(item.title || '제목 없음')}</span>
+                    </div>
+                    <div class="note-list-meta">${escHtml(subMeta.join(' · ') || '캐릭터 항목')}</div>
+                    <div class="note-list-preview">${escHtml(preview || '아직 내용이 없습니다.')}</div>
+                  </button>
+                `;
+    }).join('')}
+            </div>
+          </aside>
+          <section class="notes-right hub-character-editor-right">
+            <div class="hub-character-editor-summary">
+              <div class="hub-character-editor-summary-title">${escHtml(section.title)} / ${escHtml(selectedItem.title || '제목 없음')}</div>
+              <div class="hub-character-editor-summary-chips">${metaChips.join('')}</div>
+            </div>
+            <div class="notes-right-head hub-character-editor-head">
+              <input type="text" id="character-editor-title" class="note-editor-title" value="${escHtml(selectedItem.title || '')}" placeholder="항목 제목" />
+              <input type="text" id="character-editor-tags" class="hub-character-editor-tags" value="${escHtml(selectedTags.join(', '))}" placeholder="태그 (쉼표로 구분)" />
+            </div>
+            <div class="note-toolbar" id="character-toolbar">
+              <button class="tb-btn" data-cmd="heading" data-level="1" title="큰 제목">H1</button>
+              <button class="tb-btn" data-cmd="heading" data-level="2" title="중간 제목">H2</button>
+              <button class="tb-btn" data-cmd="heading" data-level="3" title="작은 제목">H3</button>
+              <span class="tb-sep"></span>
+              <button class="tb-btn" data-cmd="bold" title="굵게"><b>B</b></button>
+              <button class="tb-btn" data-cmd="italic" title="기울기"><i>I</i></button>
+              <button class="tb-btn" data-cmd="underline" title="밑줄"><u>U</u></button>
+              <button class="tb-btn" data-cmd="strike" title="취소선"><s>S</s></button>
+              <span class="tb-sep"></span>
+              <div class="tb-dropdown">
+                <button class="tb-btn" data-cmd="highlight-toggle" title="하이라이트">🖍</button>
+                <div class="tb-palette tb-palette-hl hidden" id="character-palette-hl">
+                  <button class="tb-color-btn" data-hl="#fde68a" style="background:#fde68a" title="노랑"></button>
+                  <button class="tb-color-btn" data-hl="#bbf7d0" style="background:#bbf7d0" title="초록"></button>
+                  <button class="tb-color-btn" data-hl="#bfdbfe" style="background:#bfdbfe" title="파랑"></button>
+                  <button class="tb-color-btn" data-hl="#fecaca" style="background:#fecaca" title="빨강"></button>
+                  <button class="tb-color-btn" data-hl="#e9d5ff" style="background:#e9d5ff" title="보라"></button>
+                  <button class="tb-color-btn tb-color-none" data-hl="" title="제거">✕</button>
+                </div>
+              </div>
+              <div class="tb-dropdown">
+                <button class="tb-btn" data-cmd="color-toggle" title="글자 색">A<span class="tb-color-indicator" id="character-color-ind"></span></button>
+                <div class="tb-palette tb-palette-color hidden" id="character-palette-color">
+                  <button class="tb-color-btn" data-color="#f5f2ee" style="background:#f5f2ee" title="기본"></button>
+                  <button class="tb-color-btn" data-color="#ef4444" style="background:#ef4444" title="빨강"></button>
+                  <button class="tb-color-btn" data-color="#f97316" style="background:#f97316" title="주황"></button>
+                  <button class="tb-color-btn" data-color="#eab308" style="background:#eab308" title="노랑"></button>
+                  <button class="tb-color-btn" data-color="#22c55e" style="background:#22c55e" title="초록"></button>
+                  <button class="tb-color-btn" data-color="#3b82f6" style="background:#3b82f6" title="파랑"></button>
+                  <button class="tb-color-btn" data-color="#a855f7" style="background:#a855f7" title="보라"></button>
+                </div>
+              </div>
+              <span class="tb-sep"></span>
+              <button class="tb-btn" data-cmd="blockquote" title="인용">"</button>
+              <button class="tb-btn" data-cmd="code" title="인라인 코드">&lt;/&gt;</button>
+              <button class="tb-btn" data-cmd="codeBlock" title="코드 블록">▤</button>
+              <span class="tb-sep"></span>
+              <button class="tb-btn" data-cmd="bulletList" title="목록">•</button>
+              <button class="tb-btn" data-cmd="orderedList" title="번호 목록">1.</button>
+              <button class="tb-btn" data-cmd="horizontalRule" title="구분선">―</button>
+            </div>
+            <div id="character-editor-tiptap" class="note-editor-tiptap hub-character-editor-tiptap"></div>
+            <div class="notes-right-actions">
+              <button class="btn-add-note btn-note-save-disabled" id="btn-character-save" disabled>저장</button>
+              <button class="btn-cancel" data-character-editor-close type="button">뒤로</button>
+            </div>
+            <div class="note-meta">수정: ${formatDateTime(selectedItem.updated_at)} · 단축키: Ctrl+S 저장 · 태그는 쉼표로 구분합니다.</div>
+          </section>
+        </div>
+      </section>
+    `;
+  }
+  function renderSectionEditorPage(section) {
+    const items = sortSectionItems(section);
+    const icon = getSectionIcon(section.section_type);
+
+    if (!items.length) {
+      return `
+        <section class="hub-section hub-character-editor-page">
+          <div class="hub-section-head">
+            <div>
+              <div class="hub-section-title">${icon} ${escHtml(section.title)} 편집기</div>
+              <div class="hub-section-sub">아직 항목이 없습니다.</div>
+            </div>
+            <div class="hub-section-head-actions">
+              <button class="hub-card-link" data-section-editor-add="${section.id}" type="button">+ 새 항목</button>
+              <button class="hub-card-link" data-section-editor-close type="button">Hub로 돌아가기</button>
+            </div>
+          </div>
+          <div class="hub-lane-empty">항목을 추가하여 시작하세요.</div>
+        </section>
+      `;
+    }
+
+    let selectedItem = items.find(item => item.id === hubSectionEditorState?.selectedItemId) || items[0];
+    if (hubSectionEditorState) hubSectionEditorState.selectedItemId = selectedItem.id;
+
+    const meta = getItemMeta(selectedItem);
+    const tags = parseTags(selectedItem.tags);
+    const stage = getItemStage(selectedItem, section.section_type);
+    const chips = [];
+    if (stage) chips.push(`<span class="hub-chip-sm stage-${stage}">${stageLabel(stage)}</span>`);
+    if (meta.priority) chips.push(`<span class="hub-chip-sm priority-${meta.priority}">${priorityLabel(meta.priority)}</span>`);
+    tags.slice(0, 3).forEach(tag => chips.push(`<span class="hub-chip-sm">${escHtml(tag)}</span>`));
+
+    return `
+      <section class="hub-section hub-character-editor-page">
+        <div class="hub-section-head">
+          <div>
+            <div class="hub-section-title">${icon} ${escHtml(section.title)} 편집기</div>
+            <div class="hub-section-sub">노트와 같은 풀 에디터로 편집합니다.</div>
+          </div>
+          <div class="hub-section-head-actions">
+            <button class="hub-card-link" data-section-editor-add="${section.id}" type="button">+ 새 항목</button>
+            <button class="hub-card-link" data-section-editor-close type="button">Hub로 돌아가기</button>
+          </div>
+        </div>
+        <div class="notes-shell hub-character-editor-shell">
+          <aside class="notes-left hub-character-editor-left">
+            <div class="notes-left-header">
+              <span>${escHtml(section.title)} · ${items.length}개</span>
+            </div>
+            <div class="notes-listbook">
+              ${items.map(item => {
+      const isActive = item.id === selectedItem.id;
+      const itemMeta = getItemMeta(item);
+      const itemStage = getItemStage(item, section.section_type);
+      const preview = previewText(item.content || '', 90);
+      const subMeta = [];
+      if (itemStage) subMeta.push(stageLabel(itemStage));
+      if (itemMeta.priority) subMeta.push(priorityLabel(itemMeta.priority));
+      return `
+                  <button class="note-list-item character-note-list-item ${isActive ? 'active' : ''}" data-section-editor-select="${item.id}" type="button" title="${escHtml(item.title || '제목 없음')}">
+                    <div class="note-list-top">
+                      <span class="note-list-title">${escHtml(item.title || '제목 없음')}</span>
+                    </div>
+                    <div class="note-list-meta">${escHtml(subMeta.join(' · ') || section.title)}</div>
+                    <div class="note-list-preview">${escHtml(preview || '아직 내용이 없습니다.')}</div>
+                  </button>
+                `;
+    }).join('')}
+            </div>
+          </aside>
+          <section class="notes-right hub-character-editor-right">
+            <div class="hub-character-editor-summary">
+              <div class="hub-character-editor-summary-title">${escHtml(section.title)} / ${escHtml(selectedItem.title || '제목 없음')}</div>
+              <div class="hub-character-editor-summary-chips">${chips.join('')}</div>
+            </div>
+            <div class="notes-right-head hub-character-editor-head">
+              <input type="text" id="section-editor-title" class="note-editor-title" value="${escHtml(selectedItem.title || '')}" placeholder="항목 제목" />
+            </div>
+            <div class="note-toolbar" id="section-toolbar">
+              <button class="tb-btn" data-cmd="heading" data-level="1" title="큰 제목">H1</button>
+              <button class="tb-btn" data-cmd="heading" data-level="2" title="중간 제목">H2</button>
+              <button class="tb-btn" data-cmd="heading" data-level="3" title="작은 제목">H3</button>
+              <span class="tb-sep"></span>
+              <button class="tb-btn" data-cmd="bold" title="굵게"><b>B</b></button>
+              <button class="tb-btn" data-cmd="italic" title="기울기"><i>I</i></button>
+              <button class="tb-btn" data-cmd="underline" title="밑줄"><u>U</u></button>
+              <button class="tb-btn" data-cmd="strike" title="취소선"><s>S</s></button>
+              <span class="tb-sep"></span>
+              <button class="tb-btn" data-cmd="blockquote" title="인용">"</button>
+              <button class="tb-btn" data-cmd="code" title="인라인 코드">&lt;/&gt;</button>
+              <button class="tb-btn" data-cmd="codeBlock" title="코드 블록">▤</button>
+              <span class="tb-sep"></span>
+              <button class="tb-btn" data-cmd="bulletList" title="목록">•</button>
+              <button class="tb-btn" data-cmd="orderedList" title="번호 목록">1.</button>
+              <button class="tb-btn" data-cmd="horizontalRule" title="구분선">―</button>
+            </div>
+            <div id="section-editor-tiptap" class="note-editor-tiptap hub-character-editor-tiptap"></div>
+            <div class="notes-right-actions">
+              <button class="btn-add-note btn-note-save-disabled" id="btn-section-save" disabled>저장</button>
+              <button class="btn-cancel btn-section-delete" data-section-editor-delete="${selectedItem.id}" type="button">삭제</button>
+              <button class="btn-cancel" data-section-editor-close type="button">뒤로</button>
+            </div>
+            <div class="note-meta">수정: ${formatDateTime(selectedItem.updated_at)} · 단축키: Ctrl+S 저장</div>
+          </section>
+        </div>
+      </section>
+    `;
+  }
+  function renderSectionExpandedBody(section, items) {
+    const addBtn = `<button class="hub-item-add-btn" data-hub-add-item="${section.id}">+ 새 항목 추가</button>`;
+    if (!items.length) {
+      return '<div class="hub-lane-empty">아직 들어간 내용이 없습니다.</div>' + addBtn;
+    }
+
+    if (section.section_type === 'character_bible') {
+      return renderCharacterBibleAccordion(section, items);
+    }
+
+    if (section.section_type === 'overview_doc') {
+      const combined = items.map(item => {
+        const text = escHtml(toPlainText(item.content || '')).replace(/\n/g, '<br>');
+        return item.title ? `<strong>${escHtml(item.title)}</strong><br>${text}` : text;
+      }).join('<br><br>');
+      return `<div class="hub-widget-profile hub-overview-prose">${combined}</div>` + addBtn;
+    }
+
+    if (section.section_type === 'reference_doc') {
+      return items.map(item => `
+        <div class="hub-widget-profile">
+          ${item.title ? `<strong>${escHtml(item.title)}</strong><br>` : ''}
+          ${escHtml(toPlainText(item.content || '')).replace(/\n/g, '<br>')}
+          <div class="hub-item-actions">
+            <button class="hub-item-action-btn" data-hub-edit-item="${item.id}" data-hub-section-id="${section.id}">수정</button>
+            <button class="hub-item-action-btn hub-item-delete-btn" data-hub-delete-item="${item.id}">삭제</button>
+          </div>
+        </div>
+      `).join('') + addBtn;
+    }
+
+    return '<div class="hub-widget-items">' + items.map(item => {
+      const meta = getItemMeta(item);
+      const tags = parseTags(item.tags);
+      const stage = getItemStage(item, section.section_type);
+      const chips = [];
+      if (section.section_type === 'worklog' && meta.work_date) {
+        chips.push(`<span class="hub-chip-sm">${escHtml(meta.work_date)}</span>`);
+      } else if (stage) {
+        chips.push(`<span class="hub-chip-sm stage-${stage}">${stageLabel(stage)}</span>`);
+      }
+      if (meta.priority) {
+        chips.push(`<span class="hub-chip-sm priority-${meta.priority}">${priorityLabel(meta.priority)}</span>`);
+      }
+      tags.slice(0, 3).forEach(tag => chips.push(`<span class="hub-chip-sm">${escHtml(tag)}</span>`));
+
+      const hasContent = item.content && item.content.replace(/<[^>]*>/g, '').trim().length > 0;
+      const itemUid = `sec-item-${section.id}-${item.id}`;
+      let workTime = '';
+      if (section.section_type === 'worklog' && Number.isFinite(Number(meta.time_summary_minutes)) && Number(meta.time_summary_minutes) > 0) {
+        workTime = `<div class="hub-widget-dialogue-worktime">작업 ${formatMinutes(Number(meta.time_summary_minutes))}</div>`;
+      }
+
+      return `
+        <div class="hub-widget-dialogue">
+          <div class="hub-widget-item">
+            <span class="hub-widget-item-title">${escHtml(item.title || '(제목 없음)')}</span>
+            ${chips.join('')}
+            <span class="hub-item-actions-inline">
+              <button class="hub-item-action-btn" data-hub-edit-item="${item.id}" data-hub-section-id="${section.id}">수정</button>
+              <button class="hub-item-action-btn hub-item-delete-btn" data-hub-delete-item="${item.id}">삭제</button>
+            </span>
+          </div>
+          ${workTime}
+          ${hasContent ? `
+            <div class="hub-widget-dialogue-body hub-item-clamp" id="${itemUid}">
+              <div class="hub-item-rich-preview">${item.content}</div>
+            </div>
+            <button class="hub-item-more-btn" data-hub-toggle-preview="${itemUid}">더 보기 ▼</button>
+          ` : ''}
+        </div>
+      `;
+    }).join('') + '</div>' + addBtn;
+  }
+  function renderCompactSectionPreview(section) {
+    const items = sortSectionItems(section);
+    const firstItem = items[0];
+    let preview = '';
+
+    if (section.section_type === 'character_bible') {
+      preview = items.length > 0
+        ? `핵심 ${items.length}개 항목으로 캐릭터 설정을 운영합니다.`
+        : '캐릭터 설정 템플릿이 아직 비어 있습니다.';
+    } else if (section.section_type === 'reference_doc' || section.section_type === 'overview_doc') {
+      preview = previewText(firstItem?.content || firstItem?.title || '', 120);
+    } else if (section.section_type === 'worklog') {
+      const workMeta = getItemMeta(firstItem);
+      const workDate = workMeta.work_date ? `${workMeta.work_date} · ` : '';
+      const workMinutes = Number(workMeta.time_summary_minutes) > 0 ? `${formatMinutes(Number(workMeta.time_summary_minutes))} · ` : '';
+      preview = `${workDate}${workMinutes}${previewText(firstItem?.content || firstItem?.title || '', 84)}`;
+    } else {
+      preview = previewText(firstItem?.title || firstItem?.content || '', 120);
+    }
+
+    const isExpanded = hubExpandedSections.has(section.id);
+    const expandedBody = isExpanded ? renderSectionExpandedBody(section, items) : '';
+
+    return `
+      <div class="hub-preview-wrap">
+        <div class="hub-preview-card" data-hub-toggle-section="${section.id}">
+          <div class="hub-preview-icon">${getSectionIcon(section.section_type)}</div>
+          <div class="hub-preview-body">
+            <div class="hub-preview-title">${escHtml(section.title)}</div>
+            <div class="hub-preview-snippet">${escHtml(preview || '비어 있음')}</div>
+          </div>
+          <div class="hub-preview-badge">${items.length}</div>
+          <span class="hub-lane-arrow">${isExpanded ? '▼' : '▶'}</span>
+        </div>
+        ${isExpanded ? `<div class="hub-preview-expanded">${expandedBody}</div>` : ''}
+      </div>
+    `;
+  }
+  function renderMajorSectionCard(section) {
+    const items = sortSectionItems(section);
+    const isExpanded = hubExpandedSections.has(section.id);
+    const icon = getSectionIcon(section.section_type);
+    let previewBody = '';
+
+    if (section.section_type === 'character_bible') {
+      previewBody = renderCharacterBiblePreview(section, items);
+    } else if (section.section_type === 'reference_doc' || section.section_type === 'overview_doc') {
+      const lines = previewLines(items[0]?.content || items[0]?.title || '', 4, 76);
+      previewBody = `
+        <div class="hub-major-lines">
+          ${lines.length > 0
+          ? lines.map(line => `<div class="hub-major-line">${escHtml(line)}</div>`).join('')
+          : '<div class="hub-major-empty">아직 정리된 문서가 없습니다.</div>'}
+        </div>
+      `;
+    } else {
+      const previewItems = items.slice(0, section.section_type === 'worklog' ? 3 : 4);
+      previewBody = `
+        <div class="hub-major-preview">
+          ${previewItems.length > 0
+          ? previewItems.map(item => {
+            const meta = getItemMeta(item);
+            const tags = parseTags(item.tags);
+            const stage = getItemStage(item, section.section_type);
+            const chips = [];
+            if (section.section_type === 'worklog' && meta.work_date) {
+              chips.push(`<span class="hub-chip-sm">${escHtml(meta.work_date)}</span>`);
+            } else if (stage) {
+              chips.push(`<span class="hub-chip-sm stage-${stage}">${stageLabel(stage)}</span>`);
+            }
+            if (meta.priority) {
+              chips.push(`<span class="hub-chip-sm priority-${meta.priority}">${priorityLabel(meta.priority)}</span>`);
+            }
+            tags.slice(0, 2).forEach(tag => chips.push(`<span class="hub-chip-sm">${escHtml(tag)}</span>`));
+
+            const infoParts = [];
+            if (section.section_type === 'worklog' && Number.isFinite(Number(meta.time_summary_minutes)) && Number(meta.time_summary_minutes) > 0) {
+              infoParts.push(`작업 ${formatMinutes(Number(meta.time_summary_minutes))}`);
+            }
+            const summary = previewText(item.content || '', 100);
+            if (summary) infoParts.push(summary);
+
+            return `
+                  <div class="hub-major-item">
+                    <div class="hub-major-item-head">
+                      <div class="hub-major-item-title">${escHtml(item.title || '(제목 없음)')}</div>
+                      <div class="hub-major-item-chips">${chips.join('')}</div>
+                    </div>
+                    ${infoParts.length > 0 ? `<div class="hub-major-item-copy">${escHtml(infoParts.join(' · '))}</div>` : ''}
+                  </div>
+                `;
+          }).join('')
+          : '<div class="hub-major-empty">아직 들어간 내용이 없습니다.</div>'}
+        </div>
+      `;
+    }
+
+    return `
+      <article class="hub-major-card type-${section.section_type.replace(/_/g, '-')}">
+        <div class="hub-major-head" data-hub-toggle-section="${section.id}">
+          <div class="hub-major-heading">
+            <div class="hub-major-eyebrow">${escHtml(section.section_type.replace(/_/g, ' '))}</div>
+            <div class="hub-major-title-row">
+              <div class="hub-major-title">${icon} ${escHtml(section.title)}</div>
+              <div class="hub-major-badge">${items.length}</div>
+            </div>
+            <div class="hub-major-sub">${escHtml(getSectionSubtitle(section.section_type))}</div>
+          </div>
+          <span class="hub-lane-arrow">${isExpanded ? '▼' : '▶'}</span>
+        </div>
+        ${previewBody}
+        <div class="hub-major-footer">
+          <div class="hub-major-meta">
+            <span class="hub-pill">${items.length > 0 ? (section.section_type === 'character_bible' ? `핵심 ${Math.min(items.length, 4)}개 미리보기` : `상위 ${Math.min(items.length, section.section_type === 'worklog' ? 3 : 4)}개 미리보기`) : '아직 비어 있음'}</span>
+          </div>
+          ${section.section_type === 'character_bible'
+        ? `<button class="hub-card-link" data-open-character-editor="${section.id}" type="button">큰 편집기 열기</button>`
+        : `<button class="hub-card-link" data-hub-go-tab="sections" type="button">섹션 탭 보기</button>`}
+        </div>
+        ${isExpanded ? `<div class="hub-major-expanded">${renderSectionExpandedBody(section, items)}</div>` : ''}
+      </article>
+    `;
+  }
+  function renderTaskFocusCard(title, eyebrow, subtitle, items, emptyCopy, toneClass, actionLabel, actionTab) {
+    return `
+      <article class="hub-major-card ${toneClass}">
+        <div class="hub-major-head">
+          <div class="hub-major-heading">
+            <div class="hub-major-eyebrow">${escHtml(eyebrow)}</div>
+            <div class="hub-major-title-row">
+              <div class="hub-major-title">${escHtml(title)}</div>
+              <div class="hub-major-badge">${items.length}</div>
+            </div>
+            <div class="hub-major-sub">${escHtml(subtitle)}</div>
+          </div>
+        </div>
+        <div class="hub-major-preview">
+          ${items.length > 0
+        ? items.slice(0, 3).map(task => {
+          const chips = [];
+          if (task.priority) chips.push(`<span class="hub-chip-sm priority-${task.priority}">${priorityLabel(task.priority)}</span>`);
+          if (task.target_date === todayStr) chips.push('<span class="hub-chip-sm">오늘</span>');
+          if (task.estimate_minutes) chips.push(`<span class="hub-chip-sm">${formatMinutes(task.estimate_minutes)}</span>`);
+          return `
+                  <div class="hub-major-item">
+                    <div class="hub-major-item-head">
+                      <div class="hub-major-item-title">${escHtml(task.title || '(제목 없음)')}</div>
+                      <div class="hub-major-item-chips">${chips.join('')}</div>
+                    </div>
+                    ${task.description ? `<div class="hub-major-item-copy">${escHtml(previewText(task.description, 110))}</div>` : ''}
+                  </div>
+                `;
+        }).join('')
+        : `<div class="hub-major-empty">${escHtml(emptyCopy)}</div>`}
+        </div>
+        <div class="hub-major-footer">
+          <div class="hub-major-meta">
+            <span class="hub-pill">${items.length > 0 ? `상위 ${Math.min(items.length, 3)}개 미리보기` : '새 작업을 추가하면 여기에 뜹니다.'}</span>
+          </div>
+          <button class="hub-card-link" data-hub-go-tab="${actionTab}" type="button">${escHtml(actionLabel)}</button>
+        </div>
+      </article>
+    `;
+  }
+
+  function cardHtml(t) {
+    return `<div class="hub-card"><div class="hub-card-top"><div class="hub-card-title-wrap"><div class="hub-card-title">${escHtml(t.title)}</div></div></div>${t.description ? `<div class="hub-card-copy">${escHtml(t.description).substring(0, 80)}</div>` : ''}<div class="hub-card-meta">${t.priority ? `<span class="hub-chip priority-${t.priority}">${priorityLabel(t.priority)}</span>` : ''}${t.estimate_minutes ? `<span class="hub-chip">${formatMinutes(t.estimate_minutes)}</span>` : ''}</div></div>`;
+  }
+
+  function taskRowHtml(t) {
+    const meta = [];
+    if (t.target_date) meta.push(t.target_date === todayStr ? '오늘' : t.target_date);
+    if (t.estimate_minutes) meta.push(`예상 ${formatMinutes(t.estimate_minutes)}`);
+    const chips = [];
+    if (t.priority) chips.push(`<span class="hub-chip-sm priority-${t.priority}">${priorityLabel(t.priority)}</span>`);
+    return `
+      <div class="hub-task-row">
+        <div>
+          <div class="hub-task-title">${escHtml(t.title)}</div>
+          ${meta.length > 0 ? `<div class="hub-task-meta">${escHtml(meta.join(' · '))}</div>` : ''}
+        </div>
+        <div class="hub-major-item-chips">${chips.join('')}</div>
+      </div>
+    `;
+  }
+
+  function laneHtml(title, items, subtitle, opts = {}) {
+    const isCollapsible = opts.collapsible;
+    const isOpen = opts.open;
+    const listContent = items.length > 0 ? items.map(cardHtml).join('') : '<div class="hub-lane-empty">비어 있음</div>';
+    return `<div class="hub-lane ${isCollapsible && !isOpen ? 'hub-lane-collapsed' : ''}"><div class="hub-lane-head ${isCollapsible ? 'hub-lane-toggle' : ''}" ${isCollapsible ? 'data-hub-toggle-done' : ''}><div><div class="hub-lane-title-row"><span class="hub-lane-title">${escHtml(title)}</span><span class="hub-lane-count">${items.length}</span>${isCollapsible ? `<span class="hub-lane-arrow">${isOpen ? '▼' : '▶'}</span>` : ''}</div><div class="hub-lane-sub">${escHtml(subtitle)}</div></div></div>${!isCollapsible || isOpen ? `<div class="hub-lane-list">${listContent}</div>` : ''}</div>`;
+  }
+
+  const tabs = [
+    { id: 'overview', label: '개요' },
+    { id: 'board', label: '보드' },
+    { id: 'tasks', label: '작업 목록' },
+    ...(sections && sections.length > 0 ? [{ id: 'sections', label: '섹션' }] : []),
+  ];
+
+  const navHtml = `<nav class="hub-nav">${tabs.map(t => `<button class="hub-nav-btn ${hubActiveTab === t.id ? 'active' : ''}" data-hub-tab="${t.id}">${t.label}</button>`).join('')}</nav>`;
+
+  let sectionHtml = '';
+  let characterEditorPayload = null;
+  let sectionEditorPayload = null;
+
+  if (hubCharacterEditorState) {
+    const characterSection = sections.find(section => section.id === hubCharacterEditorState.sectionId && section.section_type === 'character_bible');
+    if (characterSection) {
+      const sortedItems = sortSectionItems(characterSection);
+      const selectedItem = sortedItems.find(item => item.id === hubCharacterEditorState.selectedItemId) || sortedItems[0] || null;
+      if (selectedItem) {
+        const editorContent = migrateNoteContent(selectedItem.content);
+        characterEditorPayload = {
+          selectedItem,
+          editorContent,
+          tagsText: parseTags(selectedItem.tags).join(', '),
+        };
+      }
+      sectionHtml = renderCharacterBibleEditorPage(characterSection);
+    } else {
+      hubCharacterEditorState = null;
+      characterEditorOriginal = null;
+      destroySharedEditor();
+    }
+  }
+
+  if (!sectionHtml && hubSectionEditorState) {
+    const sec = sections.find(s => s.id === hubSectionEditorState.sectionId);
+    if (sec) {
+      const sortedItems = sortSectionItems(sec);
+      const selectedItem = sortedItems.find(item => item.id === hubSectionEditorState.selectedItemId) || sortedItems[0] || null;
+      if (selectedItem) {
+        const editorContent = migrateNoteContent(selectedItem.content);
+        sectionEditorPayload = { selectedItem, editorContent };
+      }
+      sectionHtml = renderSectionEditorPage(sec);
+    } else {
+      hubSectionEditorState = null;
+      destroySharedEditor();
+    }
+  }
+
+  if (!sectionHtml && hubActiveTab === 'overview') {
+    const notesCount = notes.length;
+    const featuredSectionTypes = new Set(['overview_doc', 'character_bible', 'current_status', 'roadmap', 'idea_backlog', 'worklog']);
+    const featuredSections = sections.filter(section => featuredSectionTypes.has(section.section_type));
+    const compactSections = sections.filter(section => !featuredSectionTypes.has(section.section_type));
+    const nowTasks = uniqueById(inProgress.length > 0 ? inProgress : (todayTasks.length > 0 ? todayTasks : mustTasks));
+    const nextTasks = uniqueById([...mustTasks, ...todayTasks, ...pending].filter(task => task.status !== 'done' && !inProgress.some(ip => ip.id === task.id)));
+    const heroPills = [
+      `<span class="hub-pill">진행 중 ${inProgress.length}</span>`,
+      `<span class="hub-pill">필수 ${mustTasks.length}</span>`,
+      `<span class="hub-pill">오늘 ${todayTasks.length}</span>`,
+      `<span class="hub-pill">백로그 ${backlogTasks.length}</span>`,
+      `<span class="hub-pill">노트 ${notesCount}</span>`,
+    ].join('');
+
+    const projectLogos = { 'Virtual Desktop Girl': 'assets/vdg-logo.png' };
+    const logoSrc = proj ? projectLogos[proj.name] : null;
+    const logoHtml = logoSrc ? `<img class="hub-hero-logo" src="${logoSrc}" alt="" />` : '';
+
+    sectionHtml = `
+      <section class="hub-hero hub-hero-compact"><div class="hub-hero-main"><div class="hub-hero-top-row">${logoHtml}<div class="hub-hero-text"><div class="hub-eyebrow">PROJECT HUB</div><div class="hub-title">${escHtml(proj ? proj.name : '프로젝트')}</div><div class="hub-subtitle">전체 작업 ${allTasks.length}개 중 ${done.length}개 완료. 지금 해야 할 것과 다음 우선순위를 한 화면에서 판단할 수 있게 구성했습니다.</div></div></div><div class="hub-meta-strip">${heroPills}</div></div></section>
+      <section class="hub-dashboard-grid">
+        <div class="hub-widget"><div class="hub-widget-head"><div class="hub-widget-title">📊 구현 상태</div></div><div class="hub-status-grid"><div class="hub-status-cell"><div class="hub-status-num">${pending.length}</div><div class="hub-status-label">대기</div></div><div class="hub-status-cell hub-status-active"><div class="hub-status-num">${inProgress.length}</div><div class="hub-status-label">진행 중</div></div><div class="hub-status-cell hub-status-done"><div class="hub-status-num">${done.length}</div><div class="hub-status-label">완료</div></div><div class="hub-status-cell"><div class="hub-status-num">${totalEst > 0 ? formatMinutes(totalEst) : '-'}</div><div class="hub-status-label">총 예상</div></div></div></div>
+        <div class="hub-widget"><div class="hub-widget-head"><div class="hub-widget-title">🎯 핵심 지표</div></div><div class="hub-status-grid"><div class="hub-status-cell ${mustTasks.length > 0 ? 'hub-status-warn' : ''}"><div class="hub-status-num">${mustTasks.length}</div><div class="hub-status-label">필수 미완료</div></div><div class="hub-status-cell ${todayTasks.length > 0 ? 'hub-status-active' : ''}"><div class="hub-status-num">${todayTasks.length}</div><div class="hub-status-label">오늘 할 일</div></div><div class="hub-status-cell"><div class="hub-status-num">${backlogTasks.length}</div><div class="hub-status-label">백로그</div></div><div class="hub-status-cell"><div class="hub-status-num">${notesCount}</div><div class="hub-status-label">노트</div></div></div></div>
+      </section>
+      <section class="hub-focus-grid">
+        ${renderTaskFocusCard(
+      '지금 하고 있는 일',
+      'NOW',
+      inProgress.length > 0 ? '현재 진행 중인 작업을 가장 먼저 보여줍니다.' : '진행 중 작업이 없어서 바로 착수할 후보를 대신 보여줍니다.',
+      nowTasks,
+      '아직 진행 중인 작업이 없습니다.',
+      'is-now',
+      inProgress.length > 0 ? '보드 보기' : '작업 목록 보기',
+      inProgress.length > 0 ? 'board' : 'tasks'
+    )}
+        ${renderTaskFocusCard(
+      '다음 우선순위',
+      'NEXT',
+      '필수 작업, 오늘 할 일, 백로그 순서로 다음 액션 후보를 보여줍니다.',
+      nextTasks,
+      '다음 우선순위 후보가 없습니다.',
+      'is-next',
+      '작업 목록 보기',
+      'tasks'
+    )}
+      </section>
+      ${featuredSections.length > 0 ? `<section class="hub-major-grid">${featuredSections.map(renderMajorSectionCard).join('')}</section>` : ''}
+      ${compactSections.length > 0 ? `<section class="hub-section hub-compact-section"><div class="hub-section-head"><div><div class="hub-section-title">참고 섹션</div><div class="hub-section-sub">대사 라이브러리나 참고 문서처럼 자주 펼쳐보지 않는 섹션은 아래에 간단히 둡니다.</div></div><button class="hub-card-link" data-hub-go-tab="sections" type="button">전체 섹션 보기</button></div><div class="hub-home-previews">${compactSections.map(renderCompactSectionPreview).join('')}</div></section>` : ''}`;
+  }
+
+  if (!sectionHtml && hubActiveTab === 'board') {
+    sectionHtml = `<section class="hub-section"><div class="hub-section-head"><div><div class="hub-section-title">작업 보드</div><div class="hub-section-sub">프로젝트 작업을 상태별로 관리합니다.</div></div></div><div class="hub-kanban-board">${laneHtml('대기', pending, '아직 시작하지 않은 작업')}${laneHtml('진행 중', inProgress, '현재 타이머가 동작 중인 작업')}${laneHtml('완료', done, '완료된 작업', { collapsible: true, open: hubDoneLaneOpen })}</div></section>`;
+  }
+
+  if (!sectionHtml && hubActiveTab === 'tasks') {
+    const activeTasks = allTasks.filter(t => t.status !== 'done');
+    sectionHtml = `<section class="hub-section"><div class="hub-section-head"><div><div class="hub-section-title">미완료 작업 (${activeTasks.length})</div><div class="hub-section-sub">프로젝트의 전체 미완료 작업 목록입니다.</div></div></div><div class="hub-task-list">${activeTasks.length > 0 ? activeTasks.map(taskRowHtml).join('') : '<div class="hub-lane-empty">모든 작업을 완료했습니다!</div>'}</div></section>
+    <section class="hub-section"><div class="hub-section-head"><div><div class="hub-section-title">완료된 작업 (${done.length})</div><div class="hub-section-sub">완료 처리된 작업들입니다.</div></div></div><div class="hub-task-list">${done.length > 0 ? done.slice(0, 50).map(taskRowHtml).join('') : '<div class="hub-lane-empty">아직 완료된 작업이 없습니다.</div>'}</div></section>`;
+  }
+
+  if (!sectionHtml && hubActiveTab === 'sections' && sections && sections.length > 0) {
+    let sc = '';
+    for (const sec of sections) {
+      const items = sortSectionItems(sec);
+      const icon = getSectionIcon(sec.section_type);
+      const itemCount = items.length;
+      const isExpanded = hubExpandedSections.has(sec.id);
+      const bodyHtml = isExpanded ? renderSectionExpandedBody(sec, items) : '';
+      sc += `<div class="hub-widget hub-widget-span"><div class="hub-widget-head" data-hub-toggle-section="${sec.id}"><div class="hub-widget-title">${icon} ${escHtml(sec.title)}</div><div class="hub-widget-right"><span class="hub-widget-count">${itemCount}</span><span class="hub-lane-arrow">${isExpanded ? '▼' : '▶'}</span></div></div>${bodyHtml}</div>`;
+    }
+    sectionHtml = `<section class="hub-section" style="display:flex;flex-direction:column;gap:12px;padding:18px">${sc}</section>`;
+  }
+
+  container.innerHTML = `<div class="hub-shell">${navHtml}${sectionHtml}</div>`;
+
+  container.querySelectorAll('[data-hub-tab]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (hubCharacterEditorState) {
+        if (isCharacterEditorDirty()) {
+          const ok = await showConfirmDialog('저장하지 않은 캐릭터 설정 변경사항이 있습니다.\n탭을 이동할까요?');
+          if (!ok) return;
+        }
+        hubCharacterEditorState = null;
+        characterEditorOriginal = null;
+        destroySharedEditor();
+      }
+      hubActiveTab = btn.dataset.hubTab;
+      await renderHubView();
+    });
+  });
+  container.querySelectorAll('[data-hub-go-tab]').forEach(el => {
+    el.addEventListener('click', async () => {
+      if (hubCharacterEditorState) {
+        if (isCharacterEditorDirty()) {
+          const ok = await showConfirmDialog('저장하지 않은 캐릭터 설정 변경사항이 있습니다.\n탭을 이동할까요?');
+          if (!ok) return;
+        }
+        hubCharacterEditorState = null;
+        characterEditorOriginal = null;
+        destroySharedEditor();
+      }
+      hubActiveTab = el.dataset.hubGoTab;
+      await renderHubView();
+    });
+  });
+  container.querySelectorAll('[data-hub-toggle-done]').forEach(el => {
+    el.addEventListener('click', async () => { hubDoneLaneOpen = !hubDoneLaneOpen; await renderHubView(); });
+  });
+  container.querySelectorAll('[data-hub-toggle-section]').forEach(el => {
+    el.addEventListener('click', async () => {
+      const secId = Number(el.dataset.hubToggleSection);
+      if (hubExpandedSections.has(secId)) hubExpandedSections.delete(secId);
+      else hubExpandedSections.add(secId);
+      await renderHubView();
+    });
+  });
+  container.querySelectorAll('[data-character-item-toggle]').forEach(el => {
+    el.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const key = el.dataset.characterItemToggle;
+      if (!key) return;
+      if (hubExpandedCharacterBibleItems.has(key)) hubExpandedCharacterBibleItems.delete(key);
+      else hubExpandedCharacterBibleItems.add(key);
+      await renderHubView();
+    });
+  });
+  container.querySelectorAll('[data-character-item-edit]').forEach(el => {
+    el.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const itemId = Number(el.dataset.characterItemEdit);
+      const sectionId = Number(el.dataset.characterSectionId);
+      if (!itemId || !sectionId) return;
+      await openCharacterEditor(sectionId, itemId);
+    });
+  });
+  container.querySelectorAll('[data-open-character-editor]').forEach(el => {
+    el.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const sectionId = Number(el.dataset.openCharacterEditor);
+      if (!sectionId) return;
+      await openCharacterEditor(sectionId);
+    });
+  });
+
+  // Hub section item CRUD handlers
+  container.querySelectorAll('[data-hub-edit-item]').forEach(el => {
+    el.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const itemId = Number(el.dataset.hubEditItem);
+      const sectionId = Number(el.dataset.hubSectionId);
+      if (!itemId || !sectionId) return;
+      await openSectionEditor(sectionId, itemId);
+    });
+  });
+
+  container.querySelectorAll('[data-hub-delete-item]').forEach(el => {
+    el.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const itemId = Number(el.dataset.hubDeleteItem);
+      if (!itemId) return;
+      if (!confirm('이 항목을 삭제하시겠습니까?')) return;
+      await window.orbit.deleteItem(itemId);
+      await renderHubView();
+    });
+  });
+
+  // Toggle preview expand/collapse
+  container.querySelectorAll('[data-hub-toggle-preview]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
+      const targetId = el.dataset.hubTogglePreview;
+      const body = document.getElementById(targetId);
+      if (!body) return;
+      const isExpanded = body.classList.toggle('hub-item-expanded');
+      el.textContent = isExpanded ? '접기 ▲' : '더 보기 ▼';
+    });
+  });
+
+  container.querySelectorAll('[data-hub-add-item]').forEach(el => {
+    el.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const sectionId = Number(el.dataset.hubAddItem);
+      if (!sectionId) return;
+      const newItem = await window.orbit.createItem({ section_id: sectionId, title: '새 항목', content: '<p></p>' });
+      if (newItem) {
+        await openSectionEditor(sectionId, newItem.id);
+      }
+    });
+  });
+
+  if (characterEditorPayload) {
+    characterEditorOriginal = {
+      itemId: characterEditorPayload.selectedItem.id,
+      title: characterEditorPayload.selectedItem.title || '',
+      content: characterEditorPayload.editorContent,
+      tags: characterEditorPayload.tagsText,
+    };
+    noteOriginal = null;
+    initTiptapEditor(characterEditorPayload.editorContent, {
+      elementSelector: '#character-editor-tiptap',
+      onUpdate: updateCharacterEditorDirty,
+    });
+    bindNoteToolbar({
+      toolbarSelector: '#character-toolbar',
+      highlightPaletteSelector: '#character-palette-hl',
+      colorPaletteSelector: '#character-palette-color',
+      colorIndicatorSelector: '#character-color-ind',
+    });
+    bindCharacterEditorDirtyEvents();
+    const colorIndicator = $('#character-color-ind');
+    if (colorIndicator) colorIndicator.style.background = '#f5f2ee';
+    updateCharacterEditorDirty();
+  } else if (sectionEditorPayload) {
+    characterEditorOriginal = {
+      itemId: sectionEditorPayload.selectedItem.id,
+      title: sectionEditorPayload.selectedItem.title || '',
+      content: sectionEditorPayload.editorContent,
+      tags: '',
+    };
+    noteOriginal = null;
+    initTiptapEditor(sectionEditorPayload.editorContent, {
+      elementSelector: '#section-editor-tiptap',
+      onUpdate: () => {
+        if (!hubSectionEditorState) return;
+        const saveBtn = $('#btn-section-save');
+        if (!saveBtn) return;
+        const titleInput = $('#section-editor-title');
+        const currentTitle = titleInput?.value || '';
+        const currentContent = tiptapEditor ? tiptapEditor.getHTML() : '';
+        const isDirty = currentTitle !== (characterEditorOriginal?.title || '') || currentContent !== (characterEditorOriginal?.content || '');
+        saveBtn.disabled = !isDirty;
+        saveBtn.classList.toggle('btn-note-save-disabled', !isDirty);
+      },
+    });
+    bindNoteToolbar({ toolbarSelector: '#section-toolbar' });
+
+    // Save
+    const sectionSaveBtn = $('#btn-section-save');
+    if (sectionSaveBtn) {
+      sectionSaveBtn.addEventListener('click', async () => {
+        if (!hubSectionEditorState?.selectedItemId) return;
+        const title = $('#section-editor-title')?.value?.trim() || '';
+        const content = tiptapEditor ? tiptapEditor.getHTML() : '';
+        await window.orbit.updateItem(hubSectionEditorState.selectedItemId, { title: title || null, content });
+        characterEditorOriginal = { ...characterEditorOriginal, title, content };
+        sectionSaveBtn.disabled = true;
+        sectionSaveBtn.classList.add('btn-note-save-disabled');
+      });
+    }
+
+    // Close
+    container.querySelectorAll('[data-section-editor-close]').forEach(el => {
+      el.addEventListener('click', async (e) => {
+        e.preventDefault();
+        hubSectionEditorState = null;
+        destroySharedEditor();
+        await renderHubView();
+      });
+    });
+
+    // Select item
+    container.querySelectorAll('[data-section-editor-select]').forEach(el => {
+      el.addEventListener('click', async (e) => {
+        e.preventDefault();
+        const nextId = Number(el.dataset.sectionEditorSelect);
+        if (!hubSectionEditorState || !nextId || hubSectionEditorState.selectedItemId === nextId) return;
+        // Check dirty
+        const titleInput = $('#section-editor-title');
+        const currentTitle = titleInput?.value || '';
+        const currentContent = tiptapEditor ? tiptapEditor.getHTML() : '';
+        const isDirty = currentTitle !== (characterEditorOriginal?.title || '') || currentContent !== (characterEditorOriginal?.content || '');
+        if (isDirty) {
+          const ok = await showConfirmDialog('저장하지 않은 변경사항이 있습니다.\n저장하지 않고 다른 항목으로 이동할까요?');
+          if (!ok) return;
+        }
+        hubSectionEditorState = { ...hubSectionEditorState, selectedItemId: nextId };
+        characterEditorOriginal = null;
+        destroySharedEditor();
+        await renderHubView();
+      });
+    });
+
+    // Delete
+    container.querySelectorAll('[data-section-editor-delete]').forEach(el => {
+      el.addEventListener('click', async (e) => {
+        e.preventDefault();
+        const itemId = Number(el.dataset.sectionEditorDelete);
+        if (!itemId) return;
+        if (!confirm('이 항목을 삭제하시겠습니까?')) return;
+        await window.orbit.deleteItem(itemId);
+        if (hubSectionEditorState) hubSectionEditorState.selectedItemId = null;
+        characterEditorOriginal = null;
+        destroySharedEditor();
+        await renderHubView();
+      });
+    });
+
+    // Add new item
+    container.querySelectorAll('[data-section-editor-add]').forEach(el => {
+      el.addEventListener('click', async (e) => {
+        e.preventDefault();
+        const sectionId = Number(el.dataset.sectionEditorAdd);
+        if (!sectionId) return;
+        const newItem = await window.orbit.createItem({ section_id: sectionId, title: '새 항목', content: '<p></p>' });
+        if (newItem && hubSectionEditorState) {
+          hubSectionEditorState.selectedItemId = newItem.id;
+        }
+        characterEditorOriginal = null;
+        destroySharedEditor();
+        await renderHubView();
+      });
+    });
+
+    // Ctrl+S
+    const sectionTitleInput = $('#section-editor-title');
+    if (sectionTitleInput) {
+      sectionTitleInput.addEventListener('input', () => {
+        const saveBtn = $('#btn-section-save');
+        if (!saveBtn) return;
+        const currentTitle = sectionTitleInput.value || '';
+        const currentContent = tiptapEditor ? tiptapEditor.getHTML() : '';
+        const isDirty = currentTitle !== (characterEditorOriginal?.title || '') || currentContent !== (characterEditorOriginal?.content || '');
+        saveBtn.disabled = !isDirty;
+        saveBtn.classList.toggle('btn-note-save-disabled', !isDirty);
+      });
+    }
+
+  } else if (currentView === 'hub') {
+    characterEditorOriginal = null;
+    destroySharedEditor();
+  }
+}
+
 async function renderSchedule(date) {
   const container = $('#schedule-view');
   const pid = activeProjectFilter ? activeProjectFilter.id : undefined;
@@ -1808,7 +3281,7 @@ async function renderSchedule(date) {
         workTimeHtml = ` · 실제 작업: <strong>${wLabel}</strong>`;
       }
     }
-  } catch {}
+  } catch { }
   const totalTimeHtml = `<div class="schedule-total-time">할당 시간: <strong>${totalLabel}</strong>${workTimeHtml}</div>`;
 
   container.innerHTML = headerHtml + totalTimeHtml + schedules.map(s => {

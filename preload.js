@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('orbit', {
 
   // Schedules
   getSchedules: (date, projectId) => ipcRenderer.invoke('get-schedules', date, projectId),
+  getRecentScheduleTemplates: (days, minUsage) => ipcRenderer.invoke('get-recent-schedule-templates', days, minUsage),
   createSchedule: (data) => ipcRenderer.invoke('create-schedule', data),
   updateSchedule: (id, fields) => ipcRenderer.invoke('update-schedule', id, fields),
   deleteSchedule: (id) => ipcRenderer.invoke('delete-schedule', id),
@@ -37,14 +38,25 @@ contextBridge.exposeInMainWorld('orbit', {
   // Section Items
   getItems: (sectionId) => ipcRenderer.invoke('get-items', sectionId),
   getAllItemsByProject: (projectId) => ipcRenderer.invoke('get-all-items-by-project', projectId),
+  getProjectHub: (projectId) => ipcRenderer.invoke('get-project-hub', projectId),
+  getProjectWorklog: (projectId, date) => ipcRenderer.invoke('get-project-worklog', projectId, date),
+  captureHubItem: (projectId, data) => ipcRenderer.invoke('capture-hub-item', projectId, data),
+  upsertWorklog: (projectId, data) => ipcRenderer.invoke('upsert-worklog', projectId, data),
   createItem: (data) => ipcRenderer.invoke('create-item', data),
   updateItem: (id, fields) => ipcRenderer.invoke('update-item', id, fields),
   deleteItem: (id) => ipcRenderer.invoke('delete-item', id),
+
+  // Monthly subscriptions
+  getMonthlySubscriptions: () => ipcRenderer.invoke('get-monthly-subscriptions'),
+  createMonthlySubscription: (data) => ipcRenderer.invoke('create-monthly-subscription', data),
+  updateMonthlySubscription: (id, fields) => ipcRenderer.invoke('update-monthly-subscription', id, fields),
+  deleteMonthlySubscription: (id) => ipcRenderer.invoke('delete-monthly-subscription', id),
 
   // Alarm
   selectAlarmSound: () => ipcRenderer.invoke('select-alarm-sound'),
   playYoutubeAlarm: (url) => ipcRenderer.invoke('play-youtube-alarm', url),
   stopYoutubeAlarm: () => ipcRenderer.invoke('stop-youtube-alarm'),
+  saveImage: (data) => ipcRenderer.invoke('save-image', data),
 
   // Events
   onTasksChanged: (callback) => {

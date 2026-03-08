@@ -115,8 +115,8 @@ function createServer(onTaskChange) {
   });
 
   app.post('/schedules', (req, res) => {
-    const { title, start_time, end_time } = req.body;
-    if (!title || !start_time || !end_time) return res.status(400).json({ error: 'title, start_time, end_time required' });
+    const { title, start_time } = req.body;
+    if (!title || !start_time) return res.status(400).json({ error: 'title, start_time required' });
     try {
       const schedule = db.createSchedule(req.body);
       if (onTaskChange) onTaskChange();
@@ -197,6 +197,75 @@ function createServer(onTaskChange) {
     db.deleteItem(Number(req.params.id));
     if (onTaskChange) onTaskChange();
     res.json({ ok: true });
+  });
+
+  app.get('/subscriptions/monthly', (_req, res) => {
+    res.json(db.getMonthlySubscriptions());
+  });
+
+  app.post('/subscriptions/monthly', (req, res) => {
+    try {
+      const subscription = db.createMonthlySubscription(req.body || {});
+      if (onTaskChange) onTaskChange();
+      res.status(201).json(subscription);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.patch('/subscriptions/monthly/:id', (req, res) => {
+    try {
+      const subscription = db.updateMonthlySubscription(Number(req.params.id), req.body || {});
+      if (!subscription) return res.status(404).json({ error: 'Subscription not found or no changes' });
+      if (onTaskChange) onTaskChange();
+      res.json(subscription);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/subscriptions/monthly/:id', (req, res) => {
+    db.deleteMonthlySubscription(Number(req.params.id));
+    if (onTaskChange) onTaskChange();
+    res.json({ ok: true });
+  });
+
+  app.get('/projects/:id/hub', (req, res) => {
+    try {
+      const hub = db.getProjectHubData(Number(req.params.id));
+      res.json(hub);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/projects/:id/hub/capture', (req, res) => {
+    try {
+      const result = db.captureHubItem(Number(req.params.id), req.body || {});
+      if (onTaskChange) onTaskChange();
+      res.status(201).json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/projects/:id/worklog', (req, res) => {
+    try {
+      const worklog = db.getProjectWorklog(Number(req.params.id), req.query.date);
+      res.json(worklog);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/projects/:id/worklog', (req, res) => {
+    try {
+      const result = db.upsertWorklogEntry(Number(req.params.id), req.body || {});
+      if (onTaskChange) onTaskChange();
+      res.status(201).json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
   });
 
   app.get('/projects/:id/items/export', (req, res) => {

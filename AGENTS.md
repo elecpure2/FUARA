@@ -1,4 +1,19 @@
-# FUARA Agent Quick Guide
+﻿# FUARA Agent Quick Guide
+
+## Codex 전용 고정 룰 (항상 최우선 적용)
+- FUARA는 **나만의 생산성 향상**을 위한 앱이자, **AI를 통해 비개발자도 더 수월하게 작업**할 수 있도록 돕는 앱이다.
+- 최종 목표는 개인용 도구를 넘어서, **다른 사용자들도 같은 상황에서 FUARA로 자기개발 역량을 높일 수 있게 만드는 것**이다.
+- 기능/UX/데이터 구조를 결정할 때는 항상 다음을 우선한다:
+  1) 실행 가능성(오늘 바로 행동으로 이어지는가)
+  2) 동기부여 유지(다시 켜고 싶어지는가)
+  3) 장기 확장성(다른 사용자에게도 통하는가)
+- 자정 넘김 일정 분할 고정 규칙: 하나의 일정이 00:00을 넘기면 반드시 두 개로 분할 저장한다.
+  - 전날 일정: 시작시각 ~ 24:00
+  - 다음날 일정: 00:00 ~ 종료시각
+  - 예: 3/7 22:00~3/8 01:00 요청 시 -> (3/7 22:00~24:00) + (3/8 00:00~01:00)
+- GitHub에 푸시할 때는 **개인정보/개인 운영 데이터 업로드를 절대 금지**한다.
+  - 업로드 금지 예시: 개인 프로젝트명, 실제 스케줄, 개인 할일 목록, 개인 메모/작업일지, 로컬 DB 데이터(`*.db`, `*.db-wal`, `*.db-shm`)
+  - 푸시 전 원칙: 개인 데이터는 제거/익명화/샘플화 후 반영한다.
 
 이 문서는 Cursor/Antigravity 같은 에이전트가 FUARA 앱을 즉시 연동하기 위한 실전 지침서입니다.
 
@@ -18,9 +33,55 @@
 - Base URL: `http://127.0.0.1:7777`
 - Content-Type: `application/json; charset=utf-8`
 
+## Unicode 안전 프로토콜 (매우 중요)
+- 한글/일본어/중국어처럼 `비ASCII` 문자가 들어가는 등록/수정 요청은 항상 `유니코드 안전 모드`로 처리한다.
+- PowerShell의 `Invoke-RestMethod` + 인라인 문자열/`ConvertTo-Json` 조합은 글자가 `???` 또는 깨진 문자로 저장될 수 있으므로 기본 경로로 쓰지 않는다.
+- **기본 쓰기 방식**:
+  1. UTF-8을 보장할 수 있는 `Python 스크립트` 또는 `UTF-8 파일로 저장된 Node 스크립트`를 사용한다.
+  2. JSON 직렬화 시 Python은 `json.dumps(..., ensure_ascii=False)`, Node는 UTF-8 문자열을 그대로 사용한다.
+  3. 요청 헤더에 반드시 `Content-Type: application/json; charset=utf-8`를 넣는다.
+- **권장 방식 1: Python**
+  - `urllib.request` 또는 동등한 HTTP 클라이언트를 사용한다.
+  - `data = json.dumps(payload, ensure_ascii=False).encode("utf-8")`
+  - 가능하면 저장소에 있는 `python fuara_api.py METHOD /path --json-file payload.json` 경로를 우선 사용한다.
+- **권장 방식 2: Node**
+  - `node -e` 인라인 실행보다, UTF-8 파일 또는 here-doc/file 기반 스크립트를 우선한다.
+- **금지에 가까운 방식**
+  - PowerShell에 한글 JSON을 직접 적고 `Invoke-RestMethod`로 바로 보내기
+  - 터미널 출력이 정상으로 보인다고 저장도 정상이라고 가정하기
+- **쓰기 후 검증**
+  - 비ASCII 텍스트를 저장했으면 가능하면 즉시 `GET`으로 다시 읽거나 DB를 확인해 `???`로 저장되지 않았는지 확인한다.
+  - 터미널 출력만 깨지고 실제 DB는 정상일 수도 있으므로, 필요하면 `unicode_escape` 확인이나 DB 재조회로 구분한다.
+- **빠른 판단 규칙**
+  - payload에 한글/일본어가 있으면: 무조건 `Python UTF-8 요청`을 기본값으로 사용한다.
+  - 영어/숫자만 있으면: 일반 방식 사용 가능.
+- **에이전트 실전 권장 경로**
+  - PowerShell 명령줄에 한글 JSON을 직접 적지 않는다.
+  - UTF-8 JSON 파일을 만든 뒤 `python fuara_api.py POST /tasks --json-file payload.json` 형태로 호출한다.
+  - 터미널 출력이 깨질 수 있으면 `--ascii` 옵션으로 응답을 escape해서 검증한다.
+- **예시 (Python)**
+```python
+import json, urllib.request
+
+payload = {
+    "title": "JLPT N3공부 (일본어)",
+    "description": "일본어 공부 시간",
+}
+data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+req = urllib.request.Request(
+    "http://127.0.0.1:7777/schedules",
+    data=data,
+    method="POST",
+    headers={"Content-Type": "application/json; charset=utf-8"},
+)
+with urllib.request.urlopen(req) as res:
+    print(res.read().decode("utf-8"))
+```
+
 ## 자연어 -> API 매핑
 - "푸아라 앱에 추가해줘", "FUARA에 추가해줘", "오르빗 앱에 추가해줘", "할일목록에 추가해줘" -> `POST /tasks`
 - "노트에 추가해줘", "메모에 정리해줘", "작업일지로 남겨줘" -> `POST /notes`
+- "오늘 작업일지 Hub에 업로드해줘", "VDG 작업일지 정리해줘" -> `POST /projects/:id/worklog`
 - "내일 할 일로 지정해줘" -> `target_date = 내일(YYYY-MM-DD)`
 - "완료 처리해줘" -> `PATCH /tasks/:id` with `{ "status": "done" }`
 - "다시 할 일로 복원해줘" -> `PATCH /tasks/:id` with `{ "status": "pending" }`
@@ -196,6 +257,40 @@
 3. 승인되면 `POST /sections/2/items`로 바로 등록
 4. `?format=json`으로 호출하면 프로그래밍적으로 파싱 가능한 JSON 반환
 
+## Worklog Hub 업로드
+
+하루 작업이 끝난 뒤 에이전트가 `프로젝트 Hub > 작업일지(worklog)` 섹션에 일일 요약을 남길 수 있다.
+
+### 핵심 API
+- `GET /projects/:id/worklog` → 작업일지 섹션/아이템 조회
+- `GET /projects/:id/worklog?date=YYYY-MM-DD` → 특정 날짜 작업일지 조회
+- `POST /projects/:id/worklog` → 같은 날짜 항목이 있으면 업데이트, 없으면 생성
+
+### 업로드 규칙
+- `work_date`는 로컬 기준 `YYYY-MM-DD`
+- `content`는 사람이 읽는 3~6문장 요약
+- `time_summary_minutes`는 총 작업 시간(분), 비우면 자동 계산
+- 자동 계산 우선순위:
+  1. 해당 프로젝트 완료 태스크의 `actual_minutes` 합
+  2. 값이 없으면 전역 `work_sessions` 참고
+  3. `manual_adjust_minutes`가 있으면 보정
+- 같은 날짜에 다시 업로드하면 새로 만들지 말고 업데이트한다
+- `related_task_ids`, `related_note_ids`가 있으면 같이 저장한다
+
+### POST /projects/:id/worklog 권장 페이로드
+```json
+{
+  "work_date": "2026-03-07",
+  "title": "2026-03-07 VDG 작업일지",
+  "content": "오늘은 EventDialogueGraphWindow의 얼굴 미리보기 흐름을 정리하고, 관련 대화 자산 동기화 로직도 점검했다. 편집기 사용감이 헷갈리던 부분을 줄이는 쪽으로 손봤다. 마지막으로 실제 데이터가 깨지지 않도록 저장 경로도 다시 확인했다.",
+  "time_summary_minutes": 270,
+  "time_note": "오늘 대략 4시간 30분 작업. 자동 집계값이 부족해서 체감 기준으로 보정했다.",
+  "related_task_ids": [12, 19],
+  "related_note_ids": [7],
+  "summary_source": "agent_daily_summary"
+}
+```
+
 ## PATCH /tasks/:id 가능 필드
 - `title`, `description`, `estimate_minutes`, `actual_minutes`
 - `priority` (`must|normal|low`)
@@ -207,3 +302,5 @@
 - "등록 완료: #ID / 제목 / 날짜 / 우선순위"
 - "서브태스크: N개 자동 분해 완료"
 - 수정/완료/삭제도 같은 형식으로 핵심 결과를 짧게 보고한다.
+
+

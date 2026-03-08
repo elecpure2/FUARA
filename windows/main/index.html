@@ -10,7 +10,6 @@
 
 <body>
   <div class="layout">
-    <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
         <h1 class="app-title">FUARA</h1>
@@ -29,6 +28,12 @@
         <button class="sidebar-item" data-view="notes">
           <span class="sidebar-icon">&#9998;</span> 노트
         </button>
+        <button class="sidebar-item" data-view="hub">
+          <span class="sidebar-icon">&#9783;</span> Hub
+        </button>
+        <button class="sidebar-item" data-view="misc">
+          <span class="sidebar-icon">&#9874;</span> 기타
+        </button>
       </div>
       <div class="sidebar-divider"></div>
       <div class="sidebar-section">
@@ -37,7 +42,6 @@
       </div>
     </aside>
 
-    <!-- Main content -->
     <main class="content">
       <header class="content-header">
         <div class="header-title-row">
@@ -50,19 +54,19 @@
         </div>
       </header>
 
-      <!-- Sub-tab bar for To-Do view -->
       <div class="sub-tab-bar" id="sub-tab-bar">
         <button class="sub-tab active" data-subtab="today">오늘</button>
         <button class="sub-tab" data-subtab="all">전체</button>
       </div>
 
       <div class="in-progress-section hidden" id="in-progress-section"></div>
+      <div class="hub-view hidden" id="hub-view"></div>
+      <div class="misc-view hidden" id="misc-view"></div>
       <div class="task-list" id="task-list"></div>
       <div class="calendar-view hidden" id="calendar-view"></div>
       <div class="notes-view hidden" id="notes-view"></div>
       <div class="schedule-view hidden" id="schedule-view"></div>
 
-      <!-- Add task bar -->
       <div class="add-task-bar">
         <input type="text" id="new-task-title" placeholder="새 작업 추가..." class="task-input" />
         <select id="new-task-priority" class="priority-select">
@@ -74,14 +78,13 @@
         <button class="btn-add-task" id="btn-add-task">추가</button>
       </div>
 
-      <!-- Add schedule bar -->
       <div class="add-schedule-bar hidden">
         <div class="add-schedule-row">
-          <input type="text" id="new-schedule-title" placeholder="스케줄 추가..." class="task-input" />
+          <input type="text" id="new-schedule-title" placeholder="새 스케줄 추가..." class="task-input" />
           <input type="date" id="new-schedule-date" class="date-picker" />
           <input type="text" id="new-schedule-start" class="time-input-custom" placeholder="00:00" maxlength="5" />
           <span class="time-separator">~</span>
-          <input type="text" id="new-schedule-end" class="time-input-custom" placeholder="00:00" maxlength="5" />
+          <input type="text" id="new-schedule-end" class="time-input-custom" placeholder="미정" maxlength="5" />
           <select id="new-schedule-recurrence" class="priority-select">
             <option value="none">반복 안 함</option>
             <option value="daily">매일</option>
@@ -99,16 +102,19 @@
           <button class="day-btn" data-day="5">금</button>
           <button class="day-btn" data-day="6">토</button>
         </div>
+        <label class="schedule-allocation-toggle">
+          <input type="checkbox" id="new-schedule-counts-allocation" checked />
+          <span>할당 시간에 포함</span>
+        </label>
+        <div class="schedule-quick-tags hidden" id="new-schedule-quick-tags"></div>
       </div>
 
-      <!-- Status bar -->
       <footer class="status-bar">
         <span id="status-info">작업 0개</span>
       </footer>
     </main>
   </div>
 
-  <!-- Project add modal -->
   <div class="modal-overlay hidden" id="project-modal">
     <div class="modal">
       <h3>프로젝트 추가</h3>
@@ -123,6 +129,7 @@
   </div>
 
   <script src="renderer.bundle.js"></script>
+  <script src="misc-view.js"></script>
 </body>
 
 </html>

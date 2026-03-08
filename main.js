@@ -4,8 +4,8 @@ const fs = require('fs');
 const { startServer } = require('./server');
 const db = require('./db');
 
-process.stdout.on('error', () => {});
-process.stderr.on('error', () => {});
+process.stdout.on('error', () => { });
+process.stderr.on('error', () => { });
 
 let mainWindow = null;
 let stickerWindow = null;
@@ -22,7 +22,7 @@ function loadWindowState() {
     if (fs.existsSync(STATE_FILE)) {
       return JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'));
     }
-  } catch (_) {}
+  } catch (_) { }
   return {};
 }
 
@@ -44,7 +44,7 @@ function saveWindowState() {
 
   try {
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
-  } catch (_) {}
+  } catch (_) { }
 }
 
 // ── Window creation ──
@@ -263,6 +263,7 @@ function registerIPC() {
   });
 
   ipcMain.handle('get-schedules', (_e, date, projectId) => db.getSchedulesByDate(date, projectId));
+  ipcMain.handle('get-recent-schedule-templates', (_e, days, minUsage) => db.getRecentScheduleTemplates(days, minUsage));
   ipcMain.handle('create-schedule', (_e, data) => {
     const schedule = db.createSchedule(data);
     notifyStickerRefresh();
@@ -300,6 +301,18 @@ function registerIPC() {
   // Section Items
   ipcMain.handle('get-items', (_e, sectionId) => db.getItemsBySection(sectionId));
   ipcMain.handle('get-all-items-by-project', (_e, projectId) => db.getAllItemsByProject(projectId));
+  ipcMain.handle('get-project-hub', (_e, projectId) => db.getProjectHubData(projectId));
+  ipcMain.handle('get-project-worklog', (_e, projectId, date) => db.getProjectWorklog(projectId, date));
+  ipcMain.handle('capture-hub-item', (_e, projectId, data) => {
+    const result = db.captureHubItem(projectId, data);
+    notifyStickerRefresh();
+    return result;
+  });
+  ipcMain.handle('upsert-worklog', (_e, projectId, data) => {
+    const result = db.upsertWorklogEntry(projectId, data);
+    notifyStickerRefresh();
+    return result;
+  });
   ipcMain.handle('create-item', (_e, data) => {
     const item = db.createItem(data);
     notifyStickerRefresh();
@@ -316,8 +329,35 @@ function registerIPC() {
     return { ok: true };
   });
 
+  ipcMain.handle('get-monthly-subscriptions', () => db.getMonthlySubscriptions());
+  ipcMain.handle('create-monthly-subscription', (_e, data) => {
+    const subscription = db.createMonthlySubscription(data);
+    notifyStickerRefresh();
+    return subscription;
+  });
+  ipcMain.handle('update-monthly-subscription', (_e, id, fields) => {
+    const subscription = db.updateMonthlySubscription(id, fields);
+    notifyStickerRefresh();
+    return subscription;
+  });
+  ipcMain.handle('delete-monthly-subscription', (_e, id) => {
+    db.deleteMonthlySubscription(id);
+    notifyStickerRefresh();
+    return { ok: true };
+  });
+
   ipcMain.on('show-main', () => mainWindow && mainWindow.show());
   ipcMain.on('toggle-sticker', () => toggleSticker());
+
+  // Image save
+  const IMAGES_DIR = path.join(__dirname, 'images');
+  ipcMain.handle('save-image', async (_e, { base64, ext }) => {
+    if (!fs.existsSync(IMAGES_DIR)) fs.mkdirSync(IMAGES_DIR, { recursive: true });
+    const name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext || 'png'}`;
+    const filePath = path.join(IMAGES_DIR, name);
+    fs.writeFileSync(filePath, Buffer.from(base64, 'base64'));
+    return filePath;
+  });
 
   // Effort
   ipcMain.handle('get-effort-stats', () => db.getEffortStats());

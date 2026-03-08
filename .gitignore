@@ -11,6 +11,9 @@ dist/
 *.db-shm
 *.db-wal
 
+# User images
+images/
+
 # OS files
 Thumbs.db
 .DS_Store
