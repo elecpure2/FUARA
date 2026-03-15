@@ -21,8 +21,8 @@ const HUB_SECTION_DEFAULTS = {
 
 const CHARACTER_BIBLE_TEMPLATE_ITEMS = [
   {
-    title: 'Core Identity',
-    tags: ['core', 'identity'],
+    title: '핵심 정체성',
+    tags: ['핵심', '정체성'],
     metadata: { layout: 'identity', locked: true },
     content: `한 줄 정의:
 - 푸아라는 ...
@@ -42,8 +42,8 @@ const CHARACTER_BIBLE_TEMPLATE_ITEMS = [
 - ...`,
   },
   {
-    title: 'Personality Sliders',
-    tags: ['core', 'slider'],
+    title: '성격 슬라이더',
+    tags: ['핵심', '수치'],
     metadata: { layout: 'sliders', locked: true },
     content: `아래 항목을 0~10으로 적어주세요.
 
@@ -61,8 +61,8 @@ const CHARACTER_BIBLE_TEMPLATE_ITEMS = [
 - 이 수치들이 실제 대사에서 어떻게 체감되어야 하는지 적어주세요.`,
   },
   {
-    title: 'Likes / Dislikes',
-    tags: ['preference'],
+    title: '좋아하는 것 / 싫어하는 것',
+    tags: ['취향'],
     metadata: { layout: 'list_pair' },
     content: `좋아하는 것:
 - ...
@@ -82,8 +82,8 @@ const CHARACTER_BIBLE_TEMPLATE_ITEMS = [
 - ...`,
   },
   {
-    title: 'Habits & Interaction Cues',
-    tags: ['behavior'],
+    title: '행동 습관 및 반응 패턴',
+    tags: ['행동'],
     metadata: { layout: 'patterns' },
     content: `행동 습관:
 - 자주 하는 버릇
@@ -102,8 +102,8 @@ const CHARACTER_BIBLE_TEMPLATE_ITEMS = [
 - 진지할 때:`,
   },
   {
-    title: 'Voice & Tone',
-    tags: ['tone', 'important'],
+    title: '말투 및 어조',
+    tags: ['어조', '중요'],
     metadata: { layout: 'rules', locked: true },
     content: `기본 말투:
 - 문장 길이
@@ -134,8 +134,8 @@ const CHARACTER_BIBLE_TEMPLATE_ITEMS = [
 - ...`,
   },
   {
-    title: 'Canon Facts',
-    tags: ['canon', 'important'],
+    title: '확정 사실',
+    tags: ['캐논', '중요'],
     metadata: { layout: 'facts', locked: true },
     content: `확실히 아는 사실:
 - ...
@@ -156,8 +156,8 @@ const CHARACTER_BIBLE_TEMPLATE_ITEMS = [
 - ...`,
   },
   {
-    title: 'Boundaries',
-    tags: ['safety', 'important'],
+    title: '금지선',
+    tags: ['안전', '중요'],
     metadata: { layout: 'rules', locked: true },
     content: `캐릭터 금지선:
 - 절대 하지 말아야 할 말
@@ -175,8 +175,8 @@ const CHARACTER_BIBLE_TEMPLATE_ITEMS = [
 - 메타 발언은 허용 범위를 넘기지 않기`,
   },
   {
-    title: 'Relationship Progression',
-    tags: ['relationship'],
+    title: '관계 발전 과정',
+    tags: ['관계'],
     metadata: { layout: 'timeline' },
     content: `처음 만났을 때:
 - ...
@@ -194,8 +194,8 @@ const CHARACTER_BIBLE_TEMPLATE_ITEMS = [
 - ...`,
   },
   {
-    title: 'Situation Matrix',
-    tags: ['situation'],
+    title: '상황별 반응표',
+    tags: ['상황'],
     metadata: { layout: 'matrix' },
     content: `상황별 반응 기준:
 
@@ -221,8 +221,8 @@ const CHARACTER_BIBLE_TEMPLATE_ITEMS = [
 - ...`,
   },
   {
-    title: 'LLM Guardrails',
-    tags: ['llm', 'important'],
+    title: 'LLM 가드레일',
+    tags: ['LLM', '중요'],
     metadata: { layout: 'rules', locked: true },
     content: `LLM이 반드시 지켜야 하는 규칙:
 - 캐논보다 메모리를 우선하지 말 것
@@ -234,17 +234,17 @@ LLM이 생성하면 안 되는 것:
 - ...
 
 캐논 충돌 시 우선순위:
-1. Character Bible
-2. Voice & Tone
-3. Current Runtime State
-4. Recent Memory
+1. 캐릭터 설정
+2. 말투 및 어조
+3. 현재 실행 상태
+4. 최근 기억
 
 생성 실패 시 fallback 원칙:
 - 안전하게 짧고 캐릭터다운 반응으로 되돌아갈 것`,
   },
   {
-    title: 'Approved Examples',
-    tags: ['example', 'approved'],
+    title: '좋은 예시',
+    tags: ['예시', '승인'],
     metadata: { layout: 'examples' },
     content: `푸아라다운 좋은 예시:
 1. 상황:
@@ -260,8 +260,8 @@ LLM이 생성하면 안 되는 것:
 왜 좋은지:`,
   },
   {
-    title: 'Rejected Examples',
-    tags: ['example', 'rejected'],
+    title: '나쁜 예시',
+    tags: ['예시', '거부'],
     metadata: { layout: 'examples' },
     content: `푸아라답지 않은 예시:
 1. 잘못된 대사:
@@ -351,6 +351,26 @@ function migrate() {
   const subCols = db.prepare("PRAGMA table_info(monthly_subscriptions)").all().map(c => c.name);
   if (subCols.length > 0 && !subCols.includes('has_credit_tracking')) {
     db.exec("ALTER TABLE monthly_subscriptions ADD COLUMN has_credit_tracking INTEGER DEFAULT 1");
+  }
+
+  // 캐릭터 설정 영어 → 한글 마이그레이션
+  const titleMap = [
+    ['Core Identity', '핵심 정체성', '["핵심","정체성"]'],
+    ['Personality Sliders', '성격 슬라이더', '["핵심","수치"]'],
+    ['Likes / Dislikes', '좋아하는 것 / 싫어하는 것', '["취향"]'],
+    ['Habits & Interaction Cues', '행동 습관 및 반응 패턴', '["행동"]'],
+    ['Voice & Tone', '말투 및 어조', '["어조","중요"]'],
+    ['Canon Facts', '확정 사실', '["캐논","중요"]'],
+    ['Boundaries', '금지선', '["안전","중요"]'],
+    ['Relationship Progression', '관계 발전 과정', '["관계"]'],
+    ['Situation Matrix', '상황별 반응표', '["상황"]'],
+    ['LLM Guardrails', 'LLM 가드레일', '["LLM","중요"]'],
+    ['Approved Examples', '좋은 예시', '["예시","승인"]'],
+    ['Rejected Examples', '나쁜 예시', '["예시","거부"]'],
+  ];
+  const updateStmt = db.prepare('UPDATE section_items SET title = ?, tags = ? WHERE title = ?');
+  for (const [oldTitle, newTitle, newTags] of titleMap) {
+    updateStmt.run(newTitle, newTags, oldTitle);
   }
 }
 
@@ -451,6 +471,17 @@ function initTables() {
       started_at TEXT NOT NULL,
       ended_at TEXT,
       elapsed INTEGER DEFAULT 0
+    );
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sleep_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT NOT NULL UNIQUE,
+      wake_time TEXT,
+      sleep_time TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      updated_at TEXT DEFAULT (datetime('now','localtime'))
     );
   `);
 
@@ -849,6 +880,63 @@ function updateSchedule(id, fields) {
 
 function deleteSchedule(id) {
   return getDb().prepare('DELETE FROM schedules WHERE id = ?').run(id);
+}
+
+// ── Sleep Log ──
+
+function upsertSleepLog(date, { wake_time, sleep_time }) {
+  const d = getDb();
+  const existing = d.prepare('SELECT id FROM sleep_log WHERE date = ?').get(date);
+  if (existing) {
+    const sets = [];
+    const vals = [];
+    if (wake_time !== undefined) { sets.push('wake_time = ?'); vals.push(wake_time || null); }
+    if (sleep_time !== undefined) { sets.push('sleep_time = ?'); vals.push(sleep_time || null); }
+    if (sets.length === 0) return existing;
+    sets.push("updated_at = datetime('now','localtime')");
+    vals.push(date);
+    d.prepare(`UPDATE sleep_log SET ${sets.join(', ')} WHERE date = ?`).run(...vals);
+  } else {
+    d.prepare(`
+      INSERT INTO sleep_log (date, wake_time, sleep_time)
+      VALUES (?, ?, ?)
+    `).run(date, wake_time || null, sleep_time || null);
+  }
+  return d.prepare('SELECT * FROM sleep_log WHERE date = ?').get(date);
+}
+
+function getSleepLog(date) {
+  return getDb().prepare('SELECT * FROM sleep_log WHERE date = ?').get(date) || null;
+}
+
+function getSleepStats(days = 7) {
+  const safeDays = Math.max(1, Number(days) || 7);
+  const rows = getDb().prepare(`
+    SELECT wake_time, sleep_time FROM sleep_log
+    WHERE date >= date('now', 'localtime', ? || ' days')
+      AND date <= date('now', 'localtime')
+    ORDER BY date DESC
+  `).all(`-${safeDays - 1}`);
+
+  const wakes = rows.map(r => r.wake_time).filter(Boolean);
+  const sleeps = rows.map(r => r.sleep_time).filter(Boolean);
+
+  function avgTime(times) {
+    if (!times.length) return null;
+    const totalMins = times.reduce((sum, t) => {
+      const [h, m] = t.split(':').map(Number);
+      return sum + h * 60 + m;
+    }, 0);
+    const avg = Math.round(totalMins / times.length);
+    return `${String(Math.floor(avg / 60)).padStart(2, '0')}:${String(avg % 60).padStart(2, '0')}`;
+  }
+
+  return {
+    days: safeDays,
+    count: rows.length,
+    avg_wake_time: avgTime(wakes),
+    avg_sleep_time: avgTime(sleeps),
+  };
 }
 
 // ── Project Sections ──
@@ -1672,5 +1760,8 @@ module.exports = {
   getWorkTotalByMonth,
   getProjectWorklog,
   upsertWorklogEntry,
+  upsertSleepLog,
+  getSleepLog,
+  getSleepStats,
   close,
 };

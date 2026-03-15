@@ -5,6 +5,25 @@ import Highlight from '@tiptap/extension-highlight';
 import Color from '@tiptap/extension-color';
 import { TextStyle } from '@tiptap/extension-text-style';
 import Image from '@tiptap/extension-image';
+import { marked } from 'marked';
+
+function looksLikeMarkdown(text) {
+  const patterns = [
+    /^#{1,6}\s/m,           // ## heading
+    /\*\*[^*]+\*\*/,        // **bold**
+    /`[^`]+`/,              // `code`
+    /^```/m,                // code block
+    /^[-*+]\s/m,            // unordered list
+    /^\d+\.\s/m,            // ordered list
+    /^>\s/m,                // blockquote
+    /^---$/m,               // horizontal rule
+    /\[.+?\]\(.+?\)/,       // [link](url)
+    /^- \[[ x]\]/m,         // task list
+  ];
+  let hits = 0;
+  for (const p of patterns) { if (p.test(text)) hits++; }
+  return hits >= 2;
+}
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -72,14 +91,41 @@ async function loadProjects() {
 
 // ── Effort Banner ──
 
+const MOTIVATIONAL_QUOTES = [
+  '아이디어가 안 떠오르면 듣던 음악을 멈추고 집중 모드로 들어가보자!',
+  '아이디어가 막히면 따뜻한 물로 샤워를 잠깐 하고 오자!',
+  '잠시 나가서 운동하고 오면 생각하는 효율이 훨씬 올라간다!',
+  '지금 당장 하지 않으면 무조건 미뤄진다. 지금 바로 시작하자!',
+  '5분만 해보자고 시작하면 어느새 1시간이 지나 있다!',
+  '작업이 막히면 다른 작업부터 하나 끝내보자. 흐름이 돌아온다!',
+  '모니터 앞에서 멍 때리고 있다면 일어나서 스트레칭부터!',
+  '복잡한 문제는 종이에 손으로 써보면 정리가 된다!',
+  '졸릴 때 억지로 버티지 말고 15분만 눈 붙이자. 그게 더 빠르다!',
+  '물 한 잔 마시고 심호흡 한 번. 이것만으로도 리셋된다!',
+  '오늘 하루를 후회 없이 불태워보자!',
+  '어제보다 1%만 더 나아가면 된다. 그게 쌓이면 엄청난 차이!',
+  '지금 이 순간이 미래의 내가 가장 부러워할 시간이다!',
+  '완벽하지 않아도 괜찮아. 일단 시작하는 게 반이다!',
+  '힘들다는 건 성장하고 있다는 증거다!',
+  '포기하고 싶을 때가 가장 가까워진 순간이다!',
+  '오늘의 고생이 내일의 실력이 된다!',
+  '작은 진전도 진전이다. 스스로를 과소평가하지 말자!',
+  '쉬는 것도 실력이다. 오늘 충분히 쉬었으면 이제 달려보자!',
+  '남들이 쉴 때 한 발짝 더 가는 사람이 결국 이긴다!',
+];
+
+function getRandomQuote() {
+  return MOTIVATIONAL_QUOTES[Math.floor(Math.random() * MOTIVATIONAL_QUOTES.length)];
+}
+
 function buildEffortMessage(stats) {
   if (!stats) return null;
   const { today, vsYesterday, vsWeekAvg } = stats;
-  if (today.score === 0) return { icon: '💪', text: '오늘도 화이팅!', cls: 'neutral' };
+  if (today.score === 0) return { icon: '💪', text: getRandomQuote(), cls: 'neutral' };
   if (vsYesterday !== null && vsYesterday > 0) return { icon: '🔥', text: `어제보다 ${vsYesterday}% 더 했어요!`, cls: 'hot' };
   if (vsWeekAvg !== null && vsWeekAvg >= 0) return { icon: '📈', text: '이번 주 평균 이상!', cls: 'good' };
   if (vsYesterday !== null && vsYesterday <= 0) return { icon: '🌱', text: '천천히 시작해볼까요?', cls: 'calm' };
-  return { icon: '💪', text: '오늘도 화이팅!', cls: 'neutral' };
+  return { icon: '💪', text: getRandomQuote(), cls: 'neutral' };
 }
 
 async function renderEffortBanner(containerSel) {
@@ -98,6 +144,31 @@ async function renderEffortBanner(containerSel) {
     banner.className = `effort-banner effort-${msg.cls}`;
     banner.textContent = `${msg.icon} ${msg.text}`;
   } catch { if (banner) banner.remove(); }
+}
+
+// ── Motivation Banner (schedule-only, persistent) ──
+
+let motivationTimerId = null;
+
+function startMotivationBanner() {
+  const el = $('#sched-motivation');
+  if (!el) return;
+  el.classList.remove('hidden');
+  showNextMotivation(el);
+  stopMotivationTimer();
+  motivationTimerId = setInterval(() => showNextMotivation(el), 20000);
+}
+
+function stopMotivationTimer() {
+  if (motivationTimerId) { clearInterval(motivationTimerId); motivationTimerId = null; }
+}
+
+function showNextMotivation(el) {
+  el.classList.add('sched-motivation-fade');
+  setTimeout(() => {
+    el.textContent = `💪 ${getRandomQuote()}`;
+    el.classList.remove('sched-motivation-fade');
+  }, 300);
 }
 
 // ── Tasks ──
@@ -124,6 +195,9 @@ async function loadTasks() {
   addSchedBar.classList.add('hidden');
   subTabBar.classList.add('hidden');
   $('#in-progress-section').classList.add('hidden');
+  const schedMotiv = $('#sched-motivation');
+  if (schedMotiv) schedMotiv.classList.add('hidden');
+  stopMotivationTimer();
 
   if (currentView === 'calendar') {
     calView.classList.remove('hidden');
@@ -148,10 +222,10 @@ async function loadTasks() {
     addSchedBar.classList.remove('hidden');
     headerActions.classList.add('hidden');
     syncDatePicker();
-    const schedDateInput = $('#new-schedule-date');
-    if (schedDateInput) schedDateInput.value = currentDate;
+    syncSchedDateBtn();
     $('#view-title').textContent = '스케줄';
     renderFilterBadge();
+    startMotivationBanner();
     await renderSchedule(currentDate);
     renderEffortBanner('#schedule-view');
     return;
@@ -910,6 +984,14 @@ async function renderNotesInto(container, preferredId) {
               <button class="tb-color-btn" data-color="#a855f7" style="background:#a855f7" title="보라"></button>
             </div>
           </div>
+          <div class="tb-dropdown">
+            <button class="tb-btn" data-cmd="fontSize-toggle" title="글자 크기">T↕</button>
+            <div class="tb-palette tb-palette-fontsize hidden" id="palette-fontsize">
+              <input type="number" class="tb-fontsize-input" min="1" max="120" placeholder="px" />
+              <button class="tb-fontsize-apply">적용</button>
+              <button class="tb-fontsize-reset">초기화</button>
+            </div>
+          </div>
           <span class="tb-sep"></span>
           <button class="tb-btn" data-cmd="blockquote" title="인용">"</button>
           <button class="tb-btn" data-cmd="code" title="인라인 코드">&lt;/&gt;</button>
@@ -968,6 +1050,19 @@ function initTiptapEditor(content, options = {}) {
   const el = $(elementSelector);
   if (!el) return;
 
+  const FontSize = TextStyle.extend({
+    addAttributes() {
+      return {
+        ...this.parent?.(),
+        fontSize: {
+          default: null,
+          parseHTML: (el) => el.style.fontSize || null,
+          renderHTML: (attrs) => attrs.fontSize ? { style: `font-size: ${attrs.fontSize}` } : {},
+        },
+      };
+    },
+  });
+
   const ResizableImage = Image.extend({
     addAttributes() {
       return {
@@ -983,12 +1078,53 @@ function initTiptapEditor(content, options = {}) {
       StarterKit,
       Underline,
       Highlight.configure({ multicolor: true }),
-      TextStyle,
+      FontSize,
       Color,
       ResizableImage.configure({ inline: false, allowBase64: false }),
     ],
-    content: content || '<p></p>',
+    content: (() => {
+      if (!content) return '<p></p>';
+      // 이미 리치 HTML이 있는 경우에도, <p>|...|</p> 마크다운 테이블만 인라인 변환
+      if (/<(?:h[1-6]|strong|em|code|pre|ul|ol|li|blockquote)\b/i.test(content)) {
+        return content.replace(/(<p>\|[^<]*<\/p>(?:\s*<p>\|[^<]*<\/p>){2,})/gi, (block) => {
+          const lines = [...block.matchAll(/<p>(\|[^<]*)<\/p>/gi)].map(m => m[1]);
+          if (lines.length < 3) return block;
+          const rows = lines.filter(l => !/^\|[\s-:|]+\|$/.test(l)).map(l =>
+            l.replace(/^\||\|$/g, '').split('|').map(c => c.trim())
+          );
+          if (rows.length < 2) return block;
+          let t = '<table><thead><tr>' + rows[0].map(c => `<th>${c}</th>`).join('') + '</tr></thead><tbody>';
+          for (let i = 1; i < rows.length; i++) t += '<tr>' + rows[i].map(c => `<td>${c}</td>`).join('') + '</tr>';
+          return t + '</tbody></table>';
+        });
+      }
+      // <p>,<br> 태그만 있는 단순 래핑인 경우 텍스트 추출 후 마크다운 검사
+      const stripped = content
+        .replace(/<\/p>/gi, '\n')
+        .replace(/<p[^>]*>/gi, '')
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+        .trim();
+      if (looksLikeMarkdown(stripped)) {
+        return marked.parse(stripped, { breaks: true });
+      }
+      return content;
+    })(),
     onUpdate: () => onUpdate(),
+  });
+
+  // ── Markdown paste handler ──
+  el.addEventListener('paste', (e) => {
+    if (!tiptapEditor) return;
+    // HTML 내용이 있으면 기본 동작에 맡김
+    const html = e.clipboardData?.getData('text/html');
+    if (html && html.trim()) return;
+    const text = e.clipboardData?.getData('text/plain');
+    if (!text) return;
+    if (!looksLikeMarkdown(text)) return;
+    e.preventDefault();
+    const converted = marked.parse(text, { breaks: true });
+    tiptapEditor.commands.insertContent(converted);
   });
 
   // ── Image drop / paste handler ──
@@ -1109,10 +1245,18 @@ function bindNoteToolbar(options = {}) {
     highlightPaletteSelector = '#palette-hl',
     colorPaletteSelector = '#palette-color',
     colorIndicatorSelector = '#tb-color-ind',
+    fontSizePaletteSelector = '#palette-fontsize',
   } = options;
 
   const toolbar = $(toolbarSelector);
   if (!toolbar) return;
+
+  // toolbar 클릭 시 에디터 selection이 풀리지 않도록 방지
+  toolbar.addEventListener('mousedown', (e) => {
+    // input 내부 클릭은 허용 (타이핑 가능하게)
+    if (e.target.tagName === 'INPUT') return;
+    e.preventDefault();
+  });
 
   toolbar.addEventListener('click', (e) => {
     const btn = e.target.closest('.tb-btn');
@@ -1149,11 +1293,49 @@ function bindNoteToolbar(options = {}) {
       case 'highlight-toggle':
         $(highlightPaletteSelector)?.classList.toggle('hidden');
         $(colorPaletteSelector)?.classList.add('hidden');
+        $(fontSizePaletteSelector)?.classList.add('hidden');
         return;
       case 'color-toggle':
         $(colorPaletteSelector)?.classList.toggle('hidden');
         $(highlightPaletteSelector)?.classList.add('hidden');
+        $(fontSizePaletteSelector)?.classList.add('hidden');
         return;
+      case 'fontSize-toggle': {
+        const fsPalette = $(fontSizePaletteSelector);
+        if (fsPalette) {
+          fsPalette.classList.toggle('hidden');
+          if (!fsPalette.classList.contains('hidden')) {
+            const input = fsPalette.querySelector('.tb-fontsize-input');
+            if (input && tiptapEditor) {
+              // 선택 영역의 font-size 감지
+              const { from, to } = tiptapEditor.state.selection;
+              const sizes = new Set();
+              tiptapEditor.state.doc.nodesBetween(from, to, (node) => {
+                if (node.isText) {
+                  const mark = node.marks.find(m => m.type.name === 'textStyle' && m.attrs.fontSize);
+                  sizes.add(mark ? parseInt(mark.attrs.fontSize, 10) : 0);
+                }
+              });
+              if (sizes.size === 1) {
+                const val = [...sizes][0];
+                input.value = val || '';
+                input.placeholder = val ? 'px' : '기본';
+              } else if (sizes.size > 1) {
+                input.value = '';
+                input.placeholder = '-';
+              } else {
+                input.value = '';
+                input.placeholder = 'px';
+              }
+              input.focus();
+              input.select();
+            }
+          }
+        }
+        $(highlightPaletteSelector)?.classList.add('hidden');
+        $(colorPaletteSelector)?.classList.add('hidden');
+        return;
+      }
     }
   });
 
@@ -1174,6 +1356,26 @@ function bindNoteToolbar(options = {}) {
       const ind = $(colorIndicatorSelector);
       if (ind) ind.style.background = color;
       $(colorPaletteSelector)?.classList.add('hidden');
+    }
+
+    const fsApply = e.target.closest('.tb-fontsize-apply');
+    if (fsApply && tiptapEditor) {
+      const palette = fsApply.closest('.tb-palette-fontsize');
+      const input = palette?.querySelector('.tb-fontsize-input');
+      const val = parseInt(input?.value, 10);
+      if (val >= 1 && val <= 120) {
+        tiptapEditor.chain().focus().setMark('textStyle', { fontSize: val + 'px' }).run();
+      }
+      palette?.classList.add('hidden');
+      return;
+    }
+
+    const fsReset = e.target.closest('.tb-fontsize-reset');
+    if (fsReset && tiptapEditor) {
+      tiptapEditor.chain().focus().unsetMark('textStyle').run();
+      const palette = fsReset.closest('.tb-palette-fontsize');
+      palette?.classList.add('hidden');
+      return;
     }
   });
 
@@ -1347,10 +1549,12 @@ async function saveCharacterEditor() {
 }
 
 async function closeCharacterEditor() {
+  pushHubHistory();
   hubCharacterEditorState = null;
   characterEditorOriginal = null;
   destroySharedEditor();
   await renderHubView();
+  updateHeaderDateButtons();
 }
 
 async function maybeCloseCharacterEditor() {
@@ -1359,12 +1563,13 @@ async function maybeCloseCharacterEditor() {
     await closeCharacterEditor();
     return;
   }
-  const ok = await showConfirmDialog('저장하지 않은 캐릭터 설정 변경사항이 있습니다.\n정말 나갈까요?');
-  if (!ok) return;
+  const result = await showSaveConfirmDialog('아직 저장되지 않은 내용이 있습니다.\n저장할까요?');
+  if (result === 'save') await saveCharacterEditor();
   await closeCharacterEditor();
 }
 
 async function openCharacterEditor(sectionId, itemId = null) {
+  pushHubHistory();
   hubCharacterEditorState = {
     sectionId: Number(sectionId),
     selectedItemId: itemId ? Number(itemId) : null,
@@ -1372,9 +1577,11 @@ async function openCharacterEditor(sectionId, itemId = null) {
   characterEditorOriginal = null;
   destroySharedEditor();
   await renderHubView();
+  updateHeaderDateButtons();
 }
 
 async function openSectionEditor(sectionId, itemId = null) {
+  pushHubHistory();
   hubSectionEditorState = {
     sectionId: Number(sectionId),
     selectedItemId: itemId ? Number(itemId) : null,
@@ -1382,14 +1589,15 @@ async function openSectionEditor(sectionId, itemId = null) {
   characterEditorOriginal = null;
   destroySharedEditor();
   await renderHubView();
+  updateHeaderDateButtons();
 }
 
 async function selectCharacterEditorItem(itemId) {
   const nextId = Number(itemId);
   if (!hubCharacterEditorState || !nextId || hubCharacterEditorState.selectedItemId === nextId) return;
   if (isCharacterEditorDirty()) {
-    const ok = await showConfirmDialog('현재 항목의 저장하지 않은 변경사항이 있습니다.\n저장하지 않고 다른 항목으로 이동할까요?');
-    if (!ok) return;
+    const result = await showSaveConfirmDialog('아직 저장되지 않은 내용이 있습니다.\n저장할까요?');
+    if (result === 'save') await saveCharacterEditor();
   }
   hubCharacterEditorState = {
     ...hubCharacterEditorState,
@@ -1498,6 +1706,26 @@ function updateHeaderDateButtons() {
   const nextBtn = $('#btn-date-next');
   if (!prevBtn || !nextBtn) return;
 
+  if (currentView === 'hub') {
+    prevBtn.classList.remove('hidden');
+    nextBtn.classList.remove('hidden');
+    prevBtn.disabled = hubNavHistory.length === 0;
+    nextBtn.disabled = hubNavForward.length === 0;
+    prevBtn.classList.toggle('header-btn-disabled', hubNavHistory.length === 0);
+    nextBtn.classList.toggle('header-btn-disabled', hubNavForward.length === 0);
+    prevBtn.title = '이전 페이지';
+    nextBtn.title = '다음 페이지';
+    return;
+  }
+
+  // 비-Hub 뷰에서는 원래 동작 복원
+  prevBtn.disabled = false;
+  nextBtn.disabled = false;
+  prevBtn.classList.remove('header-btn-disabled');
+  nextBtn.classList.remove('header-btn-disabled');
+  prevBtn.title = '이전 날짜/월';
+  nextBtn.title = '다음 날짜/월';
+
   const canNavigate = currentView !== 'project' && currentView !== 'notes' && currentView !== 'schedule';
   prevBtn.classList.toggle('hidden', !canNavigate);
   nextBtn.classList.toggle('hidden', !canNavigate);
@@ -1505,6 +1733,12 @@ function updateHeaderDateButtons() {
 
 async function moveHeaderDate(step) {
   if (currentView === 'project' || currentView === 'notes') return;
+
+  if (currentView === 'hub') {
+    if (step < 0) await hubGoBack();
+    else await hubGoForward();
+    return;
+  }
 
   if (currentView === 'calendar') {
     calendarMonth += step;
@@ -1548,8 +1782,8 @@ function bindEvents() {
         const isSameHub = view === 'hub';
         if (!isSameHub) {
           if (isCharacterEditorDirty()) {
-            const ok = await showConfirmDialog('저장하지 않은 캐릭터 설정 변경사항이 있습니다.\n페이지를 떠날까요?');
-            if (!ok) return;
+            const result = await showSaveConfirmDialog('아직 저장되지 않은 내용이 있습니다.\n저장할까요?');
+            if (result === 'save') await saveCharacterEditor();
           }
           hubCharacterEditorState = null;
           characterEditorOriginal = null;
@@ -1557,7 +1791,19 @@ function bindEvents() {
         }
       }
 
+      // 노트 뷰에서 다른 뷰로 이동 시 미저장 경고
+      if (currentView === 'notes' && sideItem.dataset.view !== 'notes' && isNoteDirty()) {
+        const result = await showSaveConfirmDialog('아직 저장되지 않은 내용이 있습니다.\n저장할까요?');
+        if (result === 'save') await saveSelectedNote();
+      }
+
       const view = sideItem.dataset.view;
+
+      // Hub 히스토리 초기화 (Hub를 떠날 때)
+      if (currentView === 'hub' && view !== 'hub') {
+        hubNavHistory.length = 0;
+        hubNavForward.length = 0;
+      }
 
       // Project click = filter toggle (keep current view)
       if (view === 'project') {
@@ -1685,7 +1931,12 @@ function bindEvents() {
 
     const noteListItem = e.target.closest('.note-list-item');
     if (currentView === 'notes' && noteListItem) {
-      selectedNoteId = Number(noteListItem.dataset.id);
+      const nextId = Number(noteListItem.dataset.id);
+      if (nextId !== selectedNoteId && isNoteDirty()) {
+        const result = await showSaveConfirmDialog('아직 저장되지 않은 내용이 있습니다.\n저장할까요?');
+        if (result === 'save') await saveSelectedNote();
+      }
+      selectedNoteId = nextId;
       await renderNotesWithSections(selectedNoteId);
       return;
     }
@@ -1822,6 +2073,14 @@ function bindEvents() {
     if (e.key === 'Enter') addSchedule();
   });
 
+  // Quick tags
+  renderScheduleQuickTags();
+  $('#new-schedule-title').addEventListener('input', () => {
+    const hasText = !!$('#new-schedule-title').value.trim();
+    const addBtn = $('#sched-tag-add');
+    if (addBtn) addBtn.classList.toggle('visible', hasText);
+  });
+
   // Recurrence type toggle
   $('#new-schedule-recurrence').addEventListener('change', (e) => {
     const row = $('#recurrence-days-row');
@@ -1863,6 +2122,7 @@ function bindEvents() {
   $('#date-picker').addEventListener('change', async (e) => {
     currentDate = e.target.value;
     if (currentView === 'schedule') {
+      syncSchedDateBtn();
       await renderSchedule(currentDate);
     } else {
       currentView = 'date';
@@ -1870,6 +2130,19 @@ function bindEvents() {
       setSidebarActive('todo');
       await loadTasks();
     }
+  });
+
+  // Custom schedule calendar dropdown
+  const schedDateBtn = $('#new-schedule-date-btn');
+  if (schedDateBtn) {
+    syncSchedDateBtn();
+    schedDateBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleSchedCalendar();
+    });
+  }
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.sched-date-picker-wrap')) closeSchedCalendar();
   });
 
   $('#btn-date-prev').addEventListener('click', async () => {
@@ -2047,6 +2320,94 @@ function formatTimeInput(raw) {
   return `${hh}:${mm}`;
 }
 
+// ── Schedule Quick Tags ──
+
+const SCHED_TAGS_KEY = 'schedule-quick-tags';
+
+function getScheduleQuickTags() {
+  try { return JSON.parse(localStorage.getItem(SCHED_TAGS_KEY)) || []; } catch { return []; }
+}
+
+function saveScheduleQuickTags(tags) {
+  localStorage.setItem(SCHED_TAGS_KEY, JSON.stringify(tags));
+}
+
+function renderScheduleQuickTags() {
+  const container = $('#new-schedule-quick-tags');
+  if (!container) return;
+  const tags = getScheduleQuickTags();
+
+  container.innerHTML = `
+    ${tags.map((t, i) => `
+      <button class="sched-quick-tag" data-idx="${i}" title="${t}">${t}</button>
+    `).join('')}
+    <button class="sched-tag-add-btn" id="sched-tag-add" title="현재 제목을 태그로 저장">+ 태그 저장</button>
+  `;
+  container.classList.toggle('hidden', false);
+
+  container.querySelectorAll('.sched-quick-tag').forEach(btn => {
+    btn.addEventListener('click', () => {
+      $('#new-schedule-title').value = btn.dataset.idx >= 0 ? getScheduleQuickTags()[btn.dataset.idx] : '';
+      const startEl = $('#new-schedule-start');
+      if (startEl) startEl.focus();
+    });
+    btn.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const idx = Number(btn.dataset.idx);
+      const tags = getScheduleQuickTags();
+      tags.splice(idx, 1);
+      saveScheduleQuickTags(tags);
+      renderScheduleQuickTags();
+    });
+  });
+
+  const addBtn = container.querySelector('#sched-tag-add');
+  if (addBtn) {
+    addBtn.addEventListener('click', () => {
+      const title = $('#new-schedule-title').value.trim();
+      if (!title) return;
+      const tags = getScheduleQuickTags();
+      if (!tags.includes(title)) {
+        tags.push(title);
+        saveScheduleQuickTags(tags);
+        renderScheduleQuickTags();
+      }
+    });
+  }
+}
+
+// ── Live Schedule Timer ──
+
+let liveScheduleTimer = null; // { id, intervalId }
+
+function startLiveTimer(scheduleId, endTimeEl) {
+  if (liveScheduleTimer) {
+    clearInterval(liveScheduleTimer.intervalId);
+  }
+  function updateDisplay() {
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    if (endTimeEl && endTimeEl.isConnected) {
+      endTimeEl.textContent = `${hh}:${mm}`;
+    } else {
+      clearInterval(liveScheduleTimer?.intervalId);
+    }
+  }
+  updateDisplay();
+  const intervalId = setInterval(updateDisplay, 10000);
+  liveScheduleTimer = { id: scheduleId, intervalId };
+  localStorage.setItem('live-schedule-id', String(scheduleId));
+}
+
+function stopLiveTimer() {
+  if (liveScheduleTimer) {
+    clearInterval(liveScheduleTimer.intervalId);
+    liveScheduleTimer = null;
+  }
+  localStorage.removeItem('live-schedule-id');
+}
+
 async function addSchedule() {
   const titleEl = $('#new-schedule-title');
   const startEl = $('#new-schedule-start');
@@ -2055,10 +2416,10 @@ async function addSchedule() {
   const title = titleEl.value.trim();
   const start = formatTimeInput(startEl.value);
   const end = formatTimeInput(endEl.value);
-  if (!title || !start || !end) return;
+  if (!title || !start) return;
 
   startEl.value = start;
-  endEl.value = end;
+  if (end) endEl.value = end;
 
   const recurrenceType = recurrenceEl.value;
   let recurrenceDays = null;
@@ -2069,15 +2430,16 @@ async function addSchedule() {
     recurrenceDays = selected.join(',');
   }
 
-  const dateEl = $('#new-schedule-date');
-  const schedDate = dateEl.value || currentDate;
+  const schedDate = currentDate;
 
+  const countsAllocation = $('#new-schedule-counts-allocation').checked;
   await window.orbit.createSchedule({
     title,
     date: schedDate,
     start_time: start,
-    end_time: end,
+    end_time: end || null,
     project_id: activeProjectFilter ? activeProjectFilter.id : null,
+    counts_toward_allocation: countsAllocation ? 1 : 0,
     recurrence_type: recurrenceType,
     recurrence_days: recurrenceDays,
   });
@@ -2096,6 +2458,49 @@ let hubActiveTab = 'overview';
 let hubDoneLaneOpen = false;
 const hubExpandedSections = new Set();
 const hubExpandedCharacterBibleItems = new Set();
+
+// ── Hub History Navigation ──
+const hubNavHistory = [];  // back stack
+const hubNavForward = [];  // forward stack
+
+function getHubSnapshot() {
+  return {
+    hubActiveTab,
+    hubCharacterEditorState: hubCharacterEditorState ? { ...hubCharacterEditorState } : null,
+    hubSectionEditorState: hubSectionEditorState ? { ...hubSectionEditorState } : null,
+  };
+}
+
+function pushHubHistory() {
+  hubNavHistory.push(getHubSnapshot());
+  hubNavForward.length = 0; // 새 이동 시 forward 스택 초기화
+}
+
+async function hubGoBack() {
+  if (hubNavHistory.length === 0) return;
+  hubNavForward.push(getHubSnapshot());
+  const snap = hubNavHistory.pop();
+  hubActiveTab = snap.hubActiveTab;
+  hubCharacterEditorState = snap.hubCharacterEditorState;
+  hubSectionEditorState = snap.hubSectionEditorState;
+  characterEditorOriginal = null;
+  destroySharedEditor();
+  await renderHubView();
+  updateHeaderDateButtons();
+}
+
+async function hubGoForward() {
+  if (hubNavForward.length === 0) return;
+  hubNavHistory.push(getHubSnapshot());
+  const snap = hubNavForward.pop();
+  hubActiveTab = snap.hubActiveTab;
+  hubCharacterEditorState = snap.hubCharacterEditorState;
+  hubSectionEditorState = snap.hubSectionEditorState;
+  characterEditorOriginal = null;
+  destroySharedEditor();
+  await renderHubView();
+  updateHeaderDateButtons();
+}
 
 async function renderHubView() {
   const container = $('#hub-view');
@@ -2299,7 +2704,7 @@ async function renderHubView() {
       const body = toPlainText(item.content || '');
       const chips = [];
       if (meta.layout) chips.push(`<span class="hub-chip-sm">${escHtml(meta.layout)}</span>`);
-      if (meta.locked) chips.push('<span class="hub-chip-sm">locked</span>');
+      if (meta.locked) chips.push('<span class="hub-chip-sm">잠금</span>');
       tags.slice(0, 2).forEach(tag => chips.push(`<span class="hub-chip-sm">${escHtml(tag)}</span>`));
       return `
             <article class="hub-character-entry ${isOpen ? 'is-open' : ''}">
@@ -2351,7 +2756,7 @@ async function renderHubView() {
     const selectedTags = parseTags(selectedItem.tags);
     const metaChips = [];
     if (selectedMeta.layout) metaChips.push(`<span class="hub-chip-sm">${escHtml(selectedMeta.layout)}</span>`);
-    if (selectedMeta.locked) metaChips.push('<span class="hub-chip-sm">template</span>');
+    if (selectedMeta.locked) metaChips.push('<span class="hub-chip-sm">템플릿</span>');
     selectedTags.forEach(tag => metaChips.push(`<span class="hub-chip-sm">${escHtml(tag)}</span>`));
 
     return `
@@ -2429,6 +2834,14 @@ async function renderHubView() {
                   <button class="tb-color-btn" data-color="#22c55e" style="background:#22c55e" title="초록"></button>
                   <button class="tb-color-btn" data-color="#3b82f6" style="background:#3b82f6" title="파랑"></button>
                   <button class="tb-color-btn" data-color="#a855f7" style="background:#a855f7" title="보라"></button>
+                </div>
+              </div>
+              <div class="tb-dropdown">
+                <button class="tb-btn" data-cmd="fontSize-toggle" title="글자 크기">T↕</button>
+                <div class="tb-palette tb-palette-fontsize hidden" id="character-palette-fontsize">
+                  <input type="number" class="tb-fontsize-input" min="1" max="120" placeholder="px" />
+                  <button class="tb-fontsize-apply">적용</button>
+                  <button class="tb-fontsize-reset">초기화</button>
                 </div>
               </div>
               <span class="tb-sep"></span>
@@ -2539,6 +2952,38 @@ async function renderHubView() {
               <button class="tb-btn" data-cmd="italic" title="기울기"><i>I</i></button>
               <button class="tb-btn" data-cmd="underline" title="밑줄"><u>U</u></button>
               <button class="tb-btn" data-cmd="strike" title="취소선"><s>S</s></button>
+              <span class="tb-sep"></span>
+              <div class="tb-dropdown">
+                <button class="tb-btn" data-cmd="highlight-toggle" title="하이라이트">🖍</button>
+                <div class="tb-palette tb-palette-hl hidden" id="section-palette-hl">
+                  <button class="tb-color-btn" data-hl="#fde68a" style="background:#fde68a" title="노랑"></button>
+                  <button class="tb-color-btn" data-hl="#bbf7d0" style="background:#bbf7d0" title="초록"></button>
+                  <button class="tb-color-btn" data-hl="#bfdbfe" style="background:#bfdbfe" title="파랑"></button>
+                  <button class="tb-color-btn" data-hl="#fecaca" style="background:#fecaca" title="빨강"></button>
+                  <button class="tb-color-btn" data-hl="#e9d5ff" style="background:#e9d5ff" title="보라"></button>
+                  <button class="tb-color-btn tb-color-none" data-hl="" title="제거">✕</button>
+                </div>
+              </div>
+              <div class="tb-dropdown">
+                <button class="tb-btn" data-cmd="color-toggle" title="글자 색">A<span class="tb-color-indicator" id="section-color-ind"></span></button>
+                <div class="tb-palette tb-palette-color hidden" id="section-palette-color">
+                  <button class="tb-color-btn" data-color="#f5f2ee" style="background:#f5f2ee" title="기본"></button>
+                  <button class="tb-color-btn" data-color="#ef4444" style="background:#ef4444" title="빨강"></button>
+                  <button class="tb-color-btn" data-color="#f97316" style="background:#f97316" title="주황"></button>
+                  <button class="tb-color-btn" data-color="#eab308" style="background:#eab308" title="노랑"></button>
+                  <button class="tb-color-btn" data-color="#22c55e" style="background:#22c55e" title="초록"></button>
+                  <button class="tb-color-btn" data-color="#3b82f6" style="background:#3b82f6" title="파랑"></button>
+                  <button class="tb-color-btn" data-color="#a855f7" style="background:#a855f7" title="보라"></button>
+                </div>
+              </div>
+              <div class="tb-dropdown">
+                <button class="tb-btn" data-cmd="fontSize-toggle" title="글자 크기">T↕</button>
+                <div class="tb-palette tb-palette-fontsize hidden" id="section-palette-fontsize">
+                  <input type="number" class="tb-fontsize-input" min="1" max="120" placeholder="px" />
+                  <button class="tb-fontsize-apply">적용</button>
+                  <button class="tb-fontsize-reset">초기화</button>
+                </div>
+              </div>
               <span class="tb-sep"></span>
               <button class="tb-btn" data-cmd="blockquote" title="인용">"</button>
               <button class="tb-btn" data-cmd="code" title="인라인 코드">&lt;/&gt;</button>
@@ -2957,15 +3402,17 @@ async function renderHubView() {
     btn.addEventListener('click', async () => {
       if (hubCharacterEditorState) {
         if (isCharacterEditorDirty()) {
-          const ok = await showConfirmDialog('저장하지 않은 캐릭터 설정 변경사항이 있습니다.\n탭을 이동할까요?');
-          if (!ok) return;
+          const result = await showSaveConfirmDialog('아직 저장되지 않은 내용이 있습니다.\n저장할까요?');
+          if (result === 'save') await saveCharacterEditor();
         }
         hubCharacterEditorState = null;
         characterEditorOriginal = null;
         destroySharedEditor();
       }
+      pushHubHistory();
       hubActiveTab = btn.dataset.hubTab;
       await renderHubView();
+      updateHeaderDateButtons();
     });
   });
   container.querySelectorAll('[data-hub-go-tab]').forEach(el => {
@@ -2979,8 +3426,10 @@ async function renderHubView() {
         characterEditorOriginal = null;
         destroySharedEditor();
       }
+      pushHubHistory();
       hubActiveTab = el.dataset.hubGoTab;
       await renderHubView();
+      updateHeaderDateButtons();
     });
   });
   container.querySelectorAll('[data-hub-toggle-done]').forEach(el => {
@@ -3091,6 +3540,7 @@ async function renderHubView() {
       highlightPaletteSelector: '#character-palette-hl',
       colorPaletteSelector: '#character-palette-color',
       colorIndicatorSelector: '#character-color-ind',
+      fontSizePaletteSelector: '#character-palette-fontsize',
     });
     bindCharacterEditorDirtyEvents();
     const colorIndicator = $('#character-color-ind');
@@ -3118,7 +3568,13 @@ async function renderHubView() {
         saveBtn.classList.toggle('btn-note-save-disabled', !isDirty);
       },
     });
-    bindNoteToolbar({ toolbarSelector: '#section-toolbar' });
+    bindNoteToolbar({
+      toolbarSelector: '#section-toolbar',
+      highlightPaletteSelector: '#section-palette-hl',
+      colorPaletteSelector: '#section-palette-color',
+      colorIndicatorSelector: '#section-color-ind',
+      fontSizePaletteSelector: '#section-palette-fontsize',
+    });
 
     // Save
     const sectionSaveBtn = $('#btn-section-save');
@@ -3156,8 +3612,12 @@ async function renderHubView() {
         const currentContent = tiptapEditor ? tiptapEditor.getHTML() : '';
         const isDirty = currentTitle !== (characterEditorOriginal?.title || '') || currentContent !== (characterEditorOriginal?.content || '');
         if (isDirty) {
-          const ok = await showConfirmDialog('저장하지 않은 변경사항이 있습니다.\n저장하지 않고 다른 항목으로 이동할까요?');
-          if (!ok) return;
+          const result = await showSaveConfirmDialog('아직 저장되지 않은 내용이 있습니다.\n저장할까요?');
+          if (result === 'save') {
+            const title = $('#section-editor-title')?.value?.trim() || '';
+            const content = tiptapEditor ? tiptapEditor.getHTML() : '';
+            await window.orbit.updateItem(hubSectionEditorState.selectedItemId, { title: title || null, content });
+          }
         }
         hubSectionEditorState = { ...hubSectionEditorState, selectedItemId: nextId };
         characterEditorOriginal = null;
@@ -3220,7 +3680,11 @@ async function renderHubView() {
 async function renderSchedule(date) {
   const container = $('#schedule-view');
   const pid = activeProjectFilter ? activeProjectFilter.id : undefined;
-  const schedules = await window.orbit.getSchedules(date, pid);
+  const [schedules, sleepLog, sleepStats] = await Promise.all([
+    window.orbit.getSchedules(date, pid),
+    window.orbit.sleepLogGet ? window.orbit.sleepLogGet(date).catch(() => null) : Promise.resolve(null),
+    window.orbit.sleepLogStats ? window.orbit.sleepLogStats(7).catch(() => null) : Promise.resolve(null),
+  ]);
 
   const alarmType = localStorage.getItem('alarm-source-type') || 'file';
   const soundPath = localStorage.getItem('alarm-sound-path');
@@ -3253,15 +3717,77 @@ async function renderSchedule(date) {
     </div>
   `;
 
+  // 주간 미니 캘린더: 현재 날짜 기준 해당 주(일~토)
+  const weekStart = new Date(dateObj);
+  weekStart.setDate(dateObj.getDate() - dateObj.getDay()); // 일요일
+  const shortDays = ['일', '월', '화', '수', '목', '금', '토'];
+  const todayStr = todayYmd();
+  const weekDates = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(weekStart);
+    d.setDate(weekStart.getDate() + i);
+    weekDates.push(formatDateYmd(d));
+  }
+
+  let weekHtml = `<div class="sched-week-strip">`;
+  weekDates.forEach((wd, i) => {
+    const d = new Date(wd + 'T00:00:00');
+    const isSel = wd === date;
+    const isTd = wd === todayStr;
+    let cls = 'sched-week-day';
+    if (isSel) cls += ' is-selected';
+    if (isTd) cls += ' is-today';
+    if (i === 0) cls += ' is-sun';
+    if (i === 6) cls += ' is-sat';
+    weekHtml += `<button class="${cls}" data-ymd="${wd}">
+      <span class="sched-week-dow">${shortDays[i]}</span>
+      <span class="sched-week-date">${d.getDate()}</span>
+      <span class="sched-week-dots" id="week-dots-${wd}"></span>
+    </button>`;
+  });
+  weekHtml += `</div>`;
+  headerHtml += weekHtml;
+
+  // 수면 위젯
+  const avgWake = sleepStats?.avg_wake_time ? sleepStats.avg_wake_time.slice(0, 5) : null;
+  const avgSleep = sleepStats?.avg_sleep_time ? sleepStats.avg_sleep_time.slice(0, 5) : null;
+  const statCount = sleepStats?.count || 0;
+  const sleepWidgetHtml = `
+    <div class="sleep-widget" id="sleep-widget">
+      <div class="sleep-widget-fields">
+        <label class="sleep-widget-label">
+          <span class="sleep-widget-icon">🌅</span> 기상
+          <input type="text" class="sleep-time-input time-input-custom" id="sleep-wake-input"
+            placeholder="06:30" value="${sleepLog?.wake_time ? sleepLog.wake_time.slice(0, 5) : ''}" maxlength="5" />
+        </label>
+        <label class="sleep-widget-label">
+          <span class="sleep-widget-icon">🌙</span> 취침
+          <input type="text" class="sleep-time-input time-input-custom" id="sleep-sleep-input"
+            placeholder="23:30" value="${sleepLog?.sleep_time ? sleepLog.sleep_time.slice(0, 5) : ''}" maxlength="5" />
+        </label>
+
+      </div>
+      ${statCount > 0 ? `
+      <div class="sleep-widget-stats">
+        <span class="sleep-stat-item">📊 최근 ${sleepStats.days}일 (${statCount}일 기록)</span>
+        ${avgWake ? `<span class="sleep-stat-item">평균 기상 <strong>${avgWake}</strong></span>` : ''}
+        ${avgSleep ? `<span class="sleep-stat-item">평균 취침 <strong>${avgSleep}</strong></span>` : ''}
+      </div>` : ''}
+    </div>
+  `;
+  headerHtml += sleepWidgetHtml;
+
   if (!schedules || schedules.length === 0) {
     container.innerHTML = headerHtml + '<div class="empty-state">스케줄이 없습니다</div>';
     bindScheduleNav(date);
     bindAlarmSettingsBtn();
+    bindSleepWidget(date);
     return;
   }
 
   const totalMinutes = schedules.reduce((sum, s) => {
     if (!s.start_time || !s.end_time) return sum;
+    if (!s.counts_toward_allocation) return sum;
     const [sh, sm] = s.start_time.split(':').map(Number);
     const [eh, em] = s.end_time.split(':').map(Number);
     return sum + (eh * 60 + em) - (sh * 60 + sm);
@@ -3286,12 +3812,17 @@ async function renderSchedule(date) {
 
   container.innerHTML = headerHtml + totalTimeHtml + schedules.map(s => {
     const alarmOn = s.alarm_enabled ? 1 : 0;
+    const noEnd = !s.end_time || s.end_time_tbd;
+    const isLive = liveScheduleTimer?.id === s.id;
+    const _n = new Date();
+    const nowStr = `${String(_n.getHours()).padStart(2, '0')}:${String(_n.getMinutes()).padStart(2, '0')}`;
+    const endDisplay = isLive ? nowStr : (s.end_time ? s.end_time.slice(0, 5) : '미정');
     return `
-    <div class="schedule-card" data-id="${s.id}">
+    <div class="schedule-card ${isLive ? 'schedule-card-live' : ''}" data-id="${s.id}">
       <div class="schedule-time">
         <span class="schedule-start">${s.start_time.slice(0, 5)}</span>
         <span class="schedule-dash">—</span>
-        <span class="schedule-end">${s.end_time.slice(0, 5)}</span>
+        <span class="schedule-end" id="sched-end-${s.id}">${endDisplay}</span>
       </div>
       <div class="schedule-body">
         <span class="schedule-title">${escHtml(s.title)}${s.is_recurring || (s.recurrence_type && s.recurrence_type !== 'none') ? ' <span class="recurrence-badge" title="반복 스케줄">🔄</span>' : ''}</span>
@@ -3300,6 +3831,7 @@ async function renderSchedule(date) {
         ${s.recurrence_type === 'daily' ? '<span class="recurrence-info">매일</span>' : ''}
         ${s.recurrence_type === 'weekly' && s.recurrence_days ? `<span class="recurrence-info">매주 ${s.recurrence_days.split(',').map(d => ['일', '월', '화', '수', '목', '금', '토'][Number(d)]).join(',')}</span>` : ''}
       </div>
+      ${noEnd ? `<button class="btn-live-timer ${isLive ? 'btn-live-stop' : 'btn-live-start'}" data-id="${s.id}" title="${isLive ? '종료' : '시작'}">${isLive ? '⏹' : '▶'}</button>` : ''}
       <button class="btn-alarm-toggle ${alarmOn ? 'alarm-on' : ''}" data-id="${s.id}" data-alarm="${alarmOn}" title="알람 ${alarmOn ? 'ON' : 'OFF'}">
         ${alarmOn ? '🔔' : '🔕'}
       </button>
@@ -3309,6 +3841,33 @@ async function renderSchedule(date) {
 
   bindScheduleNav(date);
   bindAlarmSettingsBtn();
+  bindSleepWidget(date);
+
+  // 주간 미니캘린더: 날짜 클릭 이동
+  container.querySelectorAll('.sched-week-day').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const ymd = btn.dataset.ymd;
+      if (!ymd || ymd === date) return;
+      currentDate = ymd;
+      syncDatePicker();
+      syncSchedDateBtn();
+      await renderSchedule(currentDate);
+    });
+  });
+
+  // 비동기: 주간 각 날짜의 스케줄 건수 dot 표시
+  (async () => {
+    for (const wd of weekDates) {
+      try {
+        const dayScheds = await window.orbit.getSchedules(wd, pid);
+        const dotEl = document.getElementById(`week-dots-${wd}`);
+        if (dotEl && dayScheds && dayScheds.length > 0) {
+          const count = Math.min(dayScheds.length, 4);
+          dotEl.innerHTML = Array(count).fill('<span class="sched-week-dot"></span>').join('');
+        }
+      } catch {}
+    }
+  })();
 
   container.querySelectorAll('.btn-alarm-toggle').forEach(btn => {
     btn.addEventListener('click', async (e) => {
@@ -3328,16 +3887,220 @@ async function renderSchedule(date) {
     });
   });
 
+  // Live timer buttons
+  container.querySelectorAll('.btn-live-timer').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = Number(btn.dataset.id);
+      if (btn.classList.contains('btn-live-stop')) {
+        // 종료: 현재 시각을 end_time으로 저장
+        stopLiveTimer();
+        const now = new Date();
+        const hh = String(now.getHours()).padStart(2, '0');
+        const mm = String(now.getMinutes()).padStart(2, '0');
+        await window.orbit.updateSchedule(id, { end_time: `${hh}:${mm}`, end_time_tbd: 0 });
+        await renderSchedule(date);
+      } else {
+        // 시작: 라이브 타이머 시작
+        const endEl = document.getElementById(`sched-end-${id}`);
+        startLiveTimer(id, endEl);
+        btn.classList.remove('btn-live-start');
+        btn.classList.add('btn-live-stop');
+        btn.textContent = '⏹';
+        btn.title = '종료';
+        btn.closest('.schedule-card').classList.add('schedule-card-live');
+      }
+    });
+  });
+
   // Click card to edit
   container.querySelectorAll('.schedule-card').forEach(card => {
     card.style.cursor = 'pointer';
     card.addEventListener('click', (e) => {
-      if (e.target.closest('.btn-alarm-toggle') || e.target.closest('.btn-delete-schedule')) return;
+      if (e.target.closest('.btn-alarm-toggle') || e.target.closest('.btn-delete-schedule') || e.target.closest('.btn-live-timer')) return;
       const id = Number(card.dataset.id);
       const s = schedules.find(x => x.id === id);
       if (s) showScheduleEditModal(s, date);
     });
   });
+}
+
+function bindSleepWidget(date) {
+  const wakeInput = document.getElementById('sleep-wake-input');
+  const sleepInput = document.getElementById('sleep-sleep-input');
+  if (!wakeInput || !sleepInput) return;
+
+  async function saveSleep() {
+    const wake = formatTimeInput(wakeInput.value);
+    const sleep = formatTimeInput(sleepInput.value);
+    if (!wake && !sleep) return;
+    if (wake) wakeInput.value = wake;
+    if (sleep) sleepInput.value = sleep;
+
+    // 자정-넘김 감지: 취침이 기상보다 이르면 다음날 새벽으로 처리
+    if (wake && sleep && sleep < wake) {
+      const nextDate = shiftDateYmd(date, 1);
+      await window.orbit.sleepLogUpsert(date, { wake_time: wake, sleep_time: null });
+      await window.orbit.sleepLogUpsert(nextDate, { sleep_time: sleep });
+    } else {
+      await window.orbit.sleepLogUpsert(date, {
+        wake_time: wake || null,
+        sleep_time: sleep || null,
+      });
+    }
+    await renderSchedule(date);
+  }
+
+  [wakeInput, sleepInput].forEach(inp => {
+    inp.addEventListener('blur', () => saveSleep());
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.target.blur(); } });
+  });
+}
+
+// ── Custom Schedule Date Calendar ──
+
+let schedCalMonth = null; // { year, month } for calendar view
+let schedCalOpen = false;
+
+function syncSchedDateBtn() {
+  const btn = $('#new-schedule-date-btn');
+  if (!btn) return;
+  const d = parseYmdAsLocalDate(currentDate);
+  if (!d) { btn.textContent = currentDate; return; }
+  const mm = d.getMonth() + 1;
+  const dd = d.getDate();
+  const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+  btn.textContent = `${mm}/${dd} (${dayNames[d.getDay()]})`;
+}
+
+function toggleSchedCalendar() {
+  const dropdown = $('#sched-cal-dropdown');
+  const btn = $('#new-schedule-date-btn');
+  if (!dropdown) return;
+  schedCalOpen = !schedCalOpen;
+  if (schedCalOpen) {
+    const d = parseYmdAsLocalDate(currentDate) || new Date();
+    schedCalMonth = { year: d.getFullYear(), month: d.getMonth() };
+    renderSchedCalendar();
+    dropdown.classList.remove('hidden');
+    btn?.classList.add('cal-open');
+  } else {
+    dropdown.classList.add('hidden');
+    btn?.classList.remove('cal-open');
+  }
+}
+
+function closeSchedCalendar() {
+  if (!schedCalOpen) return;
+  schedCalOpen = false;
+  const dropdown = $('#sched-cal-dropdown');
+  const btn = $('#new-schedule-date-btn');
+  if (dropdown) dropdown.classList.add('hidden');
+  if (btn) btn.classList.remove('cal-open');
+}
+
+function renderSchedCalendar() {
+  const dropdown = $('#sched-cal-dropdown');
+  if (!dropdown || !schedCalMonth) return;
+
+  const { year, month } = schedCalMonth;
+  const todayStr = todayYmd();
+  const firstDay = new Date(year, month, 1);
+  const startDow = firstDay.getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const prevMonthDays = new Date(year, month, 0).getDate();
+  const dayLabels = ['일', '월', '화', '수', '목', '금', '토'];
+
+  let cells = '';
+  // 이전 달 빈 칸
+  for (let i = startDow - 1; i >= 0; i--) {
+    const day = prevMonthDays - i;
+    const prevDate = new Date(year, month - 1, day);
+    const ymd = formatDateYmd(prevDate);
+    cells += `<button class="sched-cal-cell other-month${prevDate.getDay() === 0 ? ' is-sun' : ''}${prevDate.getDay() === 6 ? ' is-sat' : ''}" data-ymd="${ymd}">${day}</button>`;
+  }
+  // 이번 달
+  for (let day = 1; day <= daysInMonth; day++) {
+    const d = new Date(year, month, day);
+    const ymd = formatDateYmd(d);
+    const isToday = ymd === todayStr;
+    const isSelected = ymd === currentDate;
+    const dow = d.getDay();
+    let cls = 'sched-cal-cell';
+    if (isToday) cls += ' is-today';
+    if (isSelected) cls += ' is-selected';
+    if (dow === 0) cls += ' is-sun';
+    if (dow === 6) cls += ' is-sat';
+    cells += `<button class="${cls}" data-ymd="${ymd}">${day}</button>`;
+  }
+  // 다음 달 빈 칸
+  const totalCells = startDow + daysInMonth;
+  const remaining = (7 - (totalCells % 7)) % 7;
+  for (let i = 1; i <= remaining; i++) {
+    const nextDate = new Date(year, month + 1, i);
+    const ymd = formatDateYmd(nextDate);
+    cells += `<button class="sched-cal-cell other-month${nextDate.getDay() === 0 ? ' is-sun' : ''}${nextDate.getDay() === 6 ? ' is-sat' : ''}" data-ymd="${ymd}">${i}</button>`;
+  }
+
+  dropdown.innerHTML = `
+    <div class="sched-cal-header">
+      <span class="sched-cal-title">${year}년 ${month + 1}월</span>
+      <div class="sched-cal-nav">
+        <button class="sched-cal-nav-btn" id="sched-cal-prev">◀</button>
+        <button class="sched-cal-nav-btn" id="sched-cal-next">▶</button>
+      </div>
+    </div>
+    <div class="sched-cal-weekdays">${dayLabels.map(d => `<span class="sched-cal-wd">${d}</span>`).join('')}</div>
+    <div class="sched-cal-grid">${cells}</div>
+    <div class="sched-cal-footer">
+      <button class="sched-cal-today-btn" id="sched-cal-go-today">오늘</button>
+    </div>
+  `;
+
+  // 월 이동
+  dropdown.querySelector('#sched-cal-prev')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    schedCalMonth.month--;
+    if (schedCalMonth.month < 0) { schedCalMonth.month = 11; schedCalMonth.year--; }
+    renderSchedCalendar();
+  });
+  dropdown.querySelector('#sched-cal-next')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    schedCalMonth.month++;
+    if (schedCalMonth.month > 11) { schedCalMonth.month = 0; schedCalMonth.year++; }
+    renderSchedCalendar();
+  });
+
+  // 오늘 버튼
+  dropdown.querySelector('#sched-cal-go-today')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    currentDate = todayYmd();
+    syncDatePicker();
+    syncSchedDateBtn();
+    closeSchedCalendar();
+    await renderSchedule(currentDate);
+  });
+
+  // 날짜 클릭
+  dropdown.querySelectorAll('.sched-cal-cell').forEach(cell => {
+    cell.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const ymd = cell.dataset.ymd;
+      if (!ymd) return;
+      currentDate = ymd;
+      syncDatePicker();
+      syncSchedDateBtn();
+      closeSchedCalendar();
+      await renderSchedule(currentDate);
+    });
+  });
+}
+
+function formatDateYmd(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
 }
 
 function bindScheduleNav(date) {
@@ -3347,16 +4110,19 @@ function bindScheduleNav(date) {
   if (prev) prev.addEventListener('click', async () => {
     currentDate = shiftDateYmd(currentDate, -1);
     syncDatePicker();
+    syncSchedDateBtn();
     await renderSchedule(currentDate);
   });
   if (next) next.addEventListener('click', async () => {
     currentDate = shiftDateYmd(currentDate, 1);
     syncDatePicker();
+    syncSchedDateBtn();
     await renderSchedule(currentDate);
   });
   if (todayBtn) todayBtn.addEventListener('click', async () => {
     currentDate = todayYmd();
     syncDatePicker();
+    syncSchedDateBtn();
     await renderSchedule(currentDate);
   });
 }
@@ -3418,6 +4184,11 @@ function showScheduleEditModal(schedule, date) {
         </div>
       </div>
 
+      <label class="schedule-allocation-toggle" style="margin:8px 0 4px">
+        <input type="checkbox" id="edit-sched-counts-allocation" ${schedule.counts_toward_allocation !== 0 ? 'checked' : ''} />
+        <span>할당 시간에 포함</span>
+      </label>
+
       <div class="modal-actions">
         <button class="btn-cancel" id="btn-edit-sched-cancel">취소</button>
         <button class="btn-add-task" id="btn-edit-sched-save">저장</button>
@@ -3470,12 +4241,14 @@ function showScheduleEditModal(schedule, date) {
       recurrenceDays = selected.join(',');
     }
 
+    const countsAlloc = overlay.querySelector('#edit-sched-counts-allocation').checked;
     await window.orbit.updateSchedule(schedule.id, {
       title,
       date: overlay.querySelector('#edit-sched-date').value,
       start_time: start,
       end_time: end,
       description: overlay.querySelector('#edit-sched-desc').value.trim() || null,
+      counts_toward_allocation: countsAlloc ? 1 : 0,
       recurrence_type: recurrenceType,
       recurrence_days: recurrenceDays,
     });
@@ -3735,9 +4508,41 @@ function showConfirmDialog(message) {
   });
 }
 
+// 2-button save confirm dialog: returns 'save' | 'discard'
+function showSaveConfirmDialog(message) {
+  return new Promise((resolve) => {
+    let overlay = document.getElementById('confirm-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'confirm-overlay';
+      overlay.className = 'confirm-overlay';
+      document.body.appendChild(overlay);
+    }
+    overlay.innerHTML = `
+      <div class="confirm-box">
+        <div class="confirm-msg">${message.replace(/\n/g, '<br>')}</div>
+        <div class="confirm-btns confirm-btns-save">
+          <button class="confirm-discard">아니오</button>
+          <button class="confirm-ok">예</button>
+        </div>
+      </div>
+    `;
+    overlay.classList.add('show');
+    overlay.querySelector('.confirm-ok').addEventListener('click', () => {
+      overlay.classList.remove('show');
+      resolve('save');
+    });
+    overlay.querySelector('.confirm-discard').addEventListener('click', () => {
+      overlay.classList.remove('show');
+      resolve('discard');
+    });
+  });
+}
+
 // ── Undo Toast ──
 
 let undoTimer = null;
+
 
 function showUndoToast(taskId) {
   clearTimeout(undoTimer);

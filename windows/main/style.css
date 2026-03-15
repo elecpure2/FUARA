@@ -1056,6 +1056,8 @@ body {
   grid-template-columns: 280px 1fr;
   gap: 10px;
   padding: 8px 28px 16px;
+  height: calc(100vh - 200px);
+  overflow: hidden;
 }
 
 .notes-shell-empty {
@@ -1096,6 +1098,7 @@ body {
   border-radius: var(--radius);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .notes-left-header {
@@ -1187,6 +1190,7 @@ body {
   flex-direction: column;
   padding: 12px;
   gap: 10px;
+  overflow-y: auto;
 }
 
 .notes-right-head {
@@ -1246,7 +1250,7 @@ body {
 
 .hub-character-editor-left,
 .hub-character-editor-right {
-  min-height: 680px;
+  min-height: 0;
 }
 
 .hub-character-editor-summary {
@@ -2516,6 +2520,105 @@ body {
 .schedule-card:hover .btn-task-action {
   opacity: 1;
 }
+/* Motivation banner (persistent) */
+
+.sched-motivation {
+  padding: 10px 28px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  background: linear-gradient(90deg, var(--accent-glow), transparent 80%);
+  border-bottom: 1px solid var(--border-subtle);
+  letter-spacing: -0.2px;
+  transition: opacity 0.3s ease;
+}
+
+.sched-motivation.hidden {
+  display: none;
+}
+
+.sched-motivation-fade {
+  opacity: 0 !important;
+}
+
+/* Weekly mini calendar strip */
+
+.sched-week-strip {
+  display: flex;
+  gap: 4px;
+  padding: 10px 0 6px;
+}
+
+.sched-week-day {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 0 4px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+
+.sched-week-day:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--border);
+}
+
+.sched-week-day.is-selected {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+}
+
+.sched-week-day.is-today .sched-week-date {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.sched-week-dow {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.3px;
+}
+
+.sched-week-day.is-sun .sched-week-dow { color: #d97070; }
+.sched-week-day.is-sat .sched-week-dow { color: #6ba3d6; }
+
+.sched-week-date {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-sub);
+  font-variant-numeric: tabular-nums;
+}
+
+.sched-week-day.is-selected .sched-week-date {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.sched-week-dots {
+  display: flex;
+  gap: 3px;
+  min-height: 6px;
+  align-items: center;
+}
+
+.sched-week-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.6;
+}
+
+.sched-week-day.is-selected .sched-week-dot {
+  opacity: 1;
+}
 
 /* Schedule add bar */
 
@@ -2526,6 +2629,8 @@ body {
   padding: 14px 28px;
   border-top: 1px solid var(--border-subtle);
   background: var(--bg);
+  position: relative;
+  z-index: 10;
 }
 
 .add-schedule-bar.hidden {
@@ -2536,6 +2641,214 @@ body {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+/* Custom schedule date picker */
+
+.sched-date-picker-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.sched-date-btn {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-sub);
+  padding: 9px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sched-date-btn::after {
+  content: '▾';
+  font-size: 10px;
+  color: var(--text-muted);
+  transition: color 0.15s;
+}
+
+.sched-date-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.sched-date-btn:hover::after {
+  color: var(--accent);
+}
+
+.sched-date-btn.cal-open {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.sched-cal-dropdown {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 280px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  padding: 14px;
+  z-index: 80;
+  animation: calDropIn 0.15s ease-out;
+}
+
+.sched-cal-dropdown.hidden {
+  display: none;
+}
+
+@keyframes calDropIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(6px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+.sched-cal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.sched-cal-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.2px;
+}
+
+.sched-cal-nav {
+  display: flex;
+  gap: 4px;
+}
+
+.sched-cal-nav-btn {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.sched-cal-nav-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.sched-cal-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  margin-bottom: 4px;
+}
+
+.sched-cal-wd {
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  padding: 4px 0;
+  letter-spacing: 0.5px;
+}
+
+.sched-cal-wd:first-child { color: var(--red); opacity: 0.7; }
+.sched-cal-wd:last-child  { color: #6ba3d6; opacity: 0.7; }
+
+.sched-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.sched-cal-cell {
+  width: 100%;
+  aspect-ratio: 1;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-sub);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.12s;
+  font-variant-numeric: tabular-nums;
+}
+
+.sched-cal-cell:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+
+.sched-cal-cell.other-month {
+  color: var(--text-muted);
+  opacity: 0.35;
+}
+
+.sched-cal-cell.is-today {
+  color: var(--accent);
+  font-weight: 700;
+  background: var(--accent-glow);
+}
+
+.sched-cal-cell.is-selected {
+  background: var(--accent);
+  color: #111;
+  font-weight: 700;
+}
+
+.sched-cal-cell.is-selected.is-today {
+  background: var(--accent);
+  color: #111;
+}
+
+.sched-cal-cell.is-sun { color: #d97070; }
+.sched-cal-cell.is-sat { color: #6ba3d6; }
+.sched-cal-cell.is-sun.is-selected,
+.sched-cal-cell.is-sat.is-selected { color: #111; }
+.sched-cal-cell.is-sun.other-month,
+.sched-cal-cell.is-sat.other-month { opacity: 0.35; }
+
+.sched-cal-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+  gap: 8px;
+}
+
+.sched-cal-today-btn {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.sched-cal-today-btn:hover {
+  background: var(--accent);
+  color: #111;
 }
 
 .recurrence-days-row {
@@ -2714,6 +3027,189 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Schedule quick tags */
+
+.schedule-quick-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 0 2px;
+  align-items: center;
+}
+
+.schedule-quick-tags.hidden {
+  display: none;
+}
+
+.sched-quick-tag {
+  padding: 5px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  color: var(--text-sub);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.sched-quick-tag:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.sched-tag-add-btn {
+  padding: 5px 12px;
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 20px;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sched-tag-add-btn.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sched-tag-add-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Live timer button */
+
+.btn-live-timer {
+  border: none;
+  background: transparent;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 7px;
+  border-radius: 6px;
+  transition: all 0.2s;
+  flex-shrink: 0;
+  opacity: 0.5;
+}
+
+.btn-live-timer:hover {
+  opacity: 1;
+  background: var(--accent-glow);
+}
+
+.btn-live-start {
+  color: var(--accent);
+}
+
+.btn-live-stop {
+  color: #ef4444;
+  opacity: 1;
+  animation: live-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes live-pulse {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.schedule-card-live {
+  border-color: rgba(239, 68, 68, 0.4) !important;
+  background: rgba(239, 68, 68, 0.04) !important;
+}
+
+.schedule-card-live .schedule-end {
+  color: #ef4444;
+}
+
+/* Sleep widget */
+
+.sleep-widget {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.sleep-widget-fields {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.sleep-widget-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-sub);
+  cursor: default;
+}
+
+.sleep-widget-icon {
+  font-size: 15px;
+}
+
+.sleep-time-input {
+  width: 68px;
+  padding: 7px 8px !important;
+  font-size: 14px !important;
+}
+
+.sleep-widget-save {
+  margin-left: auto;
+  padding: 7px 16px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.sleep-widget-save:hover {
+  background: var(--accent);
+  color: #111;
+}
+
+.sleep-widget-stats {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.sleep-stat-item {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.sleep-stat-item strong {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Alarm toast */
@@ -5723,4 +6219,193 @@ body {
 
 .misc-custom-placeholder {
   padding: 20px;
+}
+
+/* ── Confirm Dialog ── */
+
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.confirm-overlay.show {
+  display: flex;
+}
+
+.confirm-box {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 24px 28px;
+  min-width: 300px;
+  max-width: 420px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+
+.confirm-msg {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.6;
+  margin-bottom: 20px;
+  text-align: center;
+}
+
+.confirm-btns {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.confirm-cancel {
+  padding: 8px 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+
+.confirm-cancel:hover {
+  border-color: var(--text-sub);
+  color: var(--text);
+}
+
+.confirm-ok {
+  padding: 8px 18px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #111;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+
+.confirm-ok:hover {
+  filter: brightness(1.1);
+}
+
+/* ── 3-button Save Confirm Dialog ── */
+
+.confirm-btns-save {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.confirm-discard {
+  padding: 8px 18px;
+  border: 1px solid rgba(217, 85, 85, 0.3);
+  border-radius: 8px;
+  background: rgba(217, 85, 85, 0.08);
+  color: #d95555;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+
+.confirm-discard:hover {
+  background: rgba(217, 85, 85, 0.18);
+  border-color: rgba(217, 85, 85, 0.5);
+}
+
+/* ── Font Size Palette ── */
+
+.tb-palette-fontsize {
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+}
+
+.tb-fontsize-input {
+  width: 52px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 6px;
+  text-align: center;
+  outline: none;
+  font-family: inherit;
+  -moz-appearance: textfield;
+}
+
+.tb-fontsize-input::-webkit-inner-spin-button,
+.tb-fontsize-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.tb-fontsize-input:focus {
+  border-color: var(--accent);
+}
+
+.tb-fontsize-apply {
+  padding: 4px 10px;
+  border: none;
+  border-radius: 4px;
+  background: var(--accent);
+  color: #111;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.12s;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.tb-fontsize-apply:hover {
+  filter: brightness(1.1);
+}
+
+.tb-fontsize-reset {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.12s;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.tb-fontsize-reset:hover {
+  border-color: var(--text-sub);
+  color: var(--text);
+}
+
+/* ── Header Button Disabled (Hub nav) ── */
+
+.header-btn-disabled {
+  opacity: 0.3;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* ── Editor heading 구분선 제거 ── */
+
+.note-editor-tiptap h1,
+.note-editor-tiptap h2,
+.note-editor-tiptap h3 {
+  border: none;
+  border-bottom: none;
 }

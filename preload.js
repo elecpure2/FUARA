@@ -96,4 +96,9 @@ contextBridge.exposeInMainWorld('orbit', {
   workSessionsByDate: (date) => ipcRenderer.invoke('work-sessions-by-date', date),
   workTotalByDate: (date) => ipcRenderer.invoke('work-total-by-date', date),
   workTotalByMonth: (year, month) => ipcRenderer.invoke('work-total-by-month', year, month),
+
+  // Sleep Log
+  sleepLogGet: (date) => ipcRenderer.invoke('sleep-log-get', date),
+  sleepLogUpsert: (date, fields) => ipcRenderer.invoke('sleep-log-upsert', date, fields),
+  sleepLogStats: (days) => ipcRenderer.invoke('sleep-log-stats', days),
 });

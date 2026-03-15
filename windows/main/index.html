@@ -65,6 +65,7 @@
       <div class="task-list" id="task-list"></div>
       <div class="calendar-view hidden" id="calendar-view"></div>
       <div class="notes-view hidden" id="notes-view"></div>
+      <div class="sched-motivation hidden" id="sched-motivation"></div>
       <div class="schedule-view hidden" id="schedule-view"></div>
 
       <div class="add-task-bar">
@@ -81,7 +82,10 @@
       <div class="add-schedule-bar hidden">
         <div class="add-schedule-row">
           <input type="text" id="new-schedule-title" placeholder="새 스케줄 추가..." class="task-input" />
-          <input type="date" id="new-schedule-date" class="date-picker" />
+          <div class="sched-date-picker-wrap">
+            <button type="button" class="sched-date-btn" id="new-schedule-date-btn"></button>
+            <div class="sched-cal-dropdown hidden" id="sched-cal-dropdown"></div>
+          </div>
           <input type="text" id="new-schedule-start" class="time-input-custom" placeholder="00:00" maxlength="5" />
           <span class="time-separator">~</span>
           <input type="text" id="new-schedule-end" class="time-input-custom" placeholder="미정" maxlength="5" />

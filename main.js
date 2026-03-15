@@ -378,6 +378,11 @@ function registerIPC() {
   ipcMain.handle('work-total-by-date', (_e, date) => db.getWorkTotalByDate(date));
   ipcMain.handle('work-total-by-month', (_e, year, month) => db.getWorkTotalByMonth(year, month));
 
+  // Sleep Log
+  ipcMain.handle('sleep-log-get', (_e, date) => db.getSleepLog(date));
+  ipcMain.handle('sleep-log-upsert', (_e, date, fields) => db.upsertSleepLog(date, fields));
+  ipcMain.handle('sleep-log-stats', (_e, days) => db.getSleepStats(days));
+
   ipcMain.handle('toggle-sticker-pin', () => {
     if (!stickerWindow) return false;
     const current = stickerWindow.isAlwaysOnTop();
